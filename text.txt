@@ -1,0 +1,51 @@
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/app/IP_refactored/dimension_1.py", line 314, in <module>
+    main()
+  File "/app/IP_refactored/dimension_1.py", line 307, in main
+    result = asyncio.run(run_shard(reindex=args.reindex))
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/asyncio/runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/asyncio/base_events.py", line 654, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/app/IP_refactored/dimension_1.py", line 253, in run_shard
+    drugs = get_target_drugs()
+            ^^^^^^^^^^^^^^^^^^
+  File "/app/IP_refactored/dimension_1.py", line 128, in get_target_drugs
+    return list_all_drug_folders()
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/IP_refactored/dimension_1.py", line 81, in list_all_drug_folders
+    blobs = gcp_utils.list_blobs_with_prefix(prefix)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/IP_refactored/gcp_utils.py", line 198, in list_blobs_with_prefix
+    return list(get_gcs_client().list_blobs(GCS_BUCKET, prefix=prefix))
+                ^^^^^^^^^^^^^^^^
+  File "/app/IP_refactored/gcp_utils.py", line 67, in get_gcs_client
+    return storage.Client(project=PROJECT_ID)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/google/cloud/storage/client.py", line 267, in __init__
+    super(Client, self).__init__(
+  File "/usr/local/lib/python3.11/site-packages/google/cloud/client/__init__.py", line 361, in __init__
+    Client.__init__(
+  File "/usr/local/lib/python3.11/site-packages/google/cloud/client/__init__.py", line 218, in __init__
+    credentials, _ = google.auth.default(scopes=scopes)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/google/auth/_default.py", line 716, in default
+    credentials, project_id = checker()
+                              ^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/google/auth/_default.py", line 709, in <lambda>
+    lambda: _get_explicit_environ_credentials(quota_project_id=quota_project_id),
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/google/auth/_default.py", line 352, in _get_explicit_environ_credentials
+    credentials, project_id = load_credentials_from_file(
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/google/auth/_default.py", line 178, in load_credentials_from_file
+    raise exceptions.DefaultCredentialsError(
+google.auth.exceptions.DefaultCredentialsError: File /app/service-account.json was not found.
