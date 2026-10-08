@@ -56,6 +56,7 @@ from typing import Dict, List, Optional
 from . import config
 from . import gcp_utils
 from .chunking.patent_filter import patent_filter
+from .chunking.drug_list import list_patent_files_for_glp1_drugs
 from .chunking.indexer import indexer as run_indexer, get_or_create_collection
 from .blocking_analysis import run_blocking_analysis
 from .primary_market_entry_horizon import (
@@ -92,6 +93,21 @@ def list_all_drug_folders() -> List[str]:
     return drugs
 
 
+def list_glp1_drug_folders() -> List[str]:
+    """List every GLP-1 drug (from the BigQuery drug-list query in
+    chunking.drug_list) that has at least one patent PDF under
+    gs://{GCS_BUCKET}/{GCS_PATENTS_PREFIX}/. Drugs returned by the query with
+    no matching GCS folder are excluded here (nothing to index for them)."""
+    if not config.GCS_BUCKET:
+        print("[DISCOVERY] GCS_BUCKET not set — cannot list patent files")
+        return []
+
+    files_by_drug = list_patent_files_for_glp1_drugs()
+    drugs = sorted(d for d, refs in files_by_drug.items() if refs)
+    print(f"[DISCOVERY] {len(drugs)} GLP-1 drug(s) with patents in gs://{config.GCS_BUCKET}/{config.GCS_PATENTS_PREFIX}/: {drugs}")
+    return drugs
+
+
 def get_my_shard(drugs: List[str]) -> List[str]:
     """Split *drugs* across Cloud Run Job tasks via CLOUD_RUN_TASK_INDEX / _COUNT."""
     idx, count = config.CLOUD_RUN_TASK_INDEX, config.CLOUD_RUN_TASK_COUNT
@@ -119,13 +135,14 @@ def parse_drug_name_list(raw: str) -> List[str]:
 
 def get_target_drugs() -> List[str]:
     """Resolve the full (pre-shard) list of drugs this run should cover:
-    DRUG_NAME (one or more, comma-separated) if set, otherwise every drug
-    folder discovered under GCS_PATENTS_PREFIX."""
+    DRUG_NAME (one or more, comma-separated) if set, otherwise every GLP-1
+    drug returned by the BigQuery drug-list query (chunking.drug_list) that
+    has patent PDFs in GCS."""
     explicit = parse_drug_name_list(config.DRUG_NAME)
     if explicit:
         print(f"[DISCOVERY] DRUG_NAME set -> restricting run to {len(explicit)} drug(s): {explicit}")
         return explicit
-    return list_all_drug_folders()
+    return list_glp1_drug_folders()
 
 
 # ─────────────────────────────────────────────

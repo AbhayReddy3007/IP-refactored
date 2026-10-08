@@ -161,3 +161,25 @@ CLOUD_RUN_TASK_COUNT = int(os.getenv("CLOUD_RUN_TASK_COUNT", "1"))
 # Leave unset / empty to process every drug found in GCS (the default,
 # sharded-discovery behaviour).
 DRUG_NAME = os.getenv("DRUG_NAME", "")
+
+# ─────────────────────────────────────────────
+# Patent-master filter (chunking/patent_filter.py)
+# ─────────────────────────────────────────────
+# Fully-qualified BigQuery table (project.dataset.table) listing every
+# patent known for each molecule, with its download/review status and a
+# confidence score. patent_filter() only returns GCS PDFs whose patent
+# number has a row here with patent_status = 'PDF Downloaded' and
+# confidence > 0.3 — so indexing, analysis, and the Excel output are all
+# restricted to this approved set, for either a single molecule or (when
+# no molecule is given) every molecule in the table.
+PATENT_MASTER_TABLE = os.getenv("PATENT_MASTER_TABLE", "cognito-dev-380506.stage.patent_master")
+
+# ─────────────────────────────────────────────
+# Drug-list discovery via BigQuery (chunking/drug_list.py)
+# ─────────────────────────────────────────────
+# BigQuery view queried to resolve the target drug list (by
+# cleaned_generic_name) for a given mechanism-of-action / target filter —
+# e.g. every GLP-1 drug — instead of relying on GCS folder discovery or a
+# manually-set DRUG_NAME. Lives in the same project/dataset as everything
+# else (PROJECT_ID / BQ_DATASET_ID above).
+DRUG_LIST_VIEW = os.getenv("DRUG_LIST_VIEW", "vw_drug_details_full")

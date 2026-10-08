@@ -23,6 +23,13 @@ def normalize(name: str) -> str:
     return re.sub(r"[\s\-_]+", "", str(name or "").lower().strip())
 
 
+def normalize_patent_number(value: str) -> str:
+    """Strip everything but letters/digits and uppercase, for matching a
+    BigQuery patent_number against a GCS filename stem regardless of
+    punctuation/casing conventions (e.g. 'US-1,234,567-B2' == 'US1234567B2.pdf')."""
+    return re.sub(r"[^A-Za-z0-9]", "", str(value or "")).upper()
+
+
 def safe_name(drug_name: str, lowercase: bool = False) -> str:
     """GCS / filesystem-safe drug name.
 
