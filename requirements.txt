@@ -9,3 +9,4 @@ PyMuPDF
 beautifulsoup4
 requests
 python-dateutil
+db-dtypes
