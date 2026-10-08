@@ -1,0 +1,11 @@
+google-genai
+google-cloud-bigquery
+google-cloud-storage
+google-auth
+psycopg2-binary
+pandas
+openpyxl
+PyMuPDF
+beautifulsoup4
+requests
+python-dateutil
