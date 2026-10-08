@@ -27,17 +27,24 @@ Cloud Run Jobs usage:
     ALLOYDB_*, GOOGLE_API_KEY, etc. — see config.py) in the job's
     configuration, set --tasks to however many parallel workers you want,
     then click Execute. Each task:
-      - discovers every drug folder under GCS_PATENTS_PREFIX
-      - takes its shard via CLOUD_RUN_TASK_INDEX / CLOUD_RUN_TASK_COUNT
+      - resolves the target drug list: DRUG_NAME if set (one name, or
+        several separated by commas), otherwise every drug folder under
+        GCS_PATENTS_PREFIX (full discovery)
+      - takes its shard of that list via CLOUD_RUN_TASK_INDEX / CLOUD_RUN_TASK_COUNT
         (Cloud Run Jobs sets these automatically per task — no config needed)
       - runs dimension_1() for each drug in its shard
       - writes each drug's Excel, and the up-to-date combined Excel, to
         gs://{GCS_BUCKET}/{GCS_CACHE_PREFIX}/{GCS_EXCEL}/
 
+    To restrict a run to specific drug(s) on Cloud Run, set the DRUG_NAME
+    env var on the job (e.g. "Semaglutide" or "Semaglutide, Tirzepatide")
+    instead of passing a CLI flag — Cloud Run Jobs doesn't take CLI args
+    per execution the way a local run does.
+
 Local / single-drug usage:
     python -m IP_refactored.dimension_1 --drug Semaglutide
     python -m IP_refactored.dimension_1 --drug Semaglutide --reindex
-    python -m IP_refactored.dimension_1              # full sharded run (local: 1 task = all drugs)
+    python -m IP_refactored.dimension_1              # DRUG_NAME if set, else full sharded run (local: 1 task = all drugs)
 """
 
 import argparse
@@ -93,6 +100,32 @@ def get_my_shard(drugs: List[str]) -> List[str]:
     shard = [d for i, d in enumerate(drugs) if i % count == idx]
     print(f"[SHARD] Task {idx + 1}/{count} -> {len(shard)} drug(s): {shard}")
     return shard
+
+
+def parse_drug_name_list(raw: str) -> List[str]:
+    """Parse DRUG_NAME ("Semaglutide" or "Semaglutide, Tirzepatide, ...")
+    into a clean, de-duplicated list of drug names, preserving order."""
+    if not raw:
+        return []
+    seen: Dict[str, bool] = {}
+    names: List[str] = []
+    for part in raw.split(","):
+        name = part.strip()
+        if name and name not in seen:
+            seen[name] = True
+            names.append(name)
+    return names
+
+
+def get_target_drugs() -> List[str]:
+    """Resolve the full (pre-shard) list of drugs this run should cover:
+    DRUG_NAME (one or more, comma-separated) if set, otherwise every drug
+    folder discovered under GCS_PATENTS_PREFIX."""
+    explicit = parse_drug_name_list(config.DRUG_NAME)
+    if explicit:
+        print(f"[DISCOVERY] DRUG_NAME set -> restricting run to {len(explicit)} drug(s): {explicit}")
+        return explicit
+    return list_all_drug_folders()
 
 
 # ─────────────────────────────────────────────
@@ -214,11 +247,16 @@ async def dimension_1(drug_name: str, reindex: bool = False) -> dict:
 # ─────────────────────────────────────────────
 
 async def run_shard(reindex: bool = False) -> dict:
-    """Discovers all drugs, takes this task's shard, and runs dimension_1()
-    for each — the Cloud Run Jobs worker entry point."""
-    drugs = list_all_drug_folders()
+    """Resolves the target drug list (DRUG_NAME if set, else full GCS
+    discovery), takes this task's shard, and runs dimension_1() for each —
+    the Cloud Run Jobs worker entry point."""
+    drugs = get_target_drugs()
     if not drugs:
-        return {"status": "error", "message": f"No drug folders found under GCS_PATENTS_PREFIX.", "results": []}
+        return {
+            "status": "error",
+            "message": "No drugs to process — DRUG_NAME is unset and no drug folders were found under GCS_PATENTS_PREFIX.",
+            "results": [],
+        }
 
     shard = get_my_shard(drugs)
     if not shard:
@@ -249,7 +287,11 @@ async def run_shard(reindex: bool = False) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description="IP Dimension 1 pipeline (patents -> score -> Excel in GCS)")
-    parser.add_argument("--drug", default=None, help="Run a single drug instead of this task's full shard.")
+    parser.add_argument(
+        "--drug", default=None,
+        help="Run a single drug, overriding DRUG_NAME and GCS discovery (local/testing use). "
+             "On Cloud Run, set the DRUG_NAME env var instead.",
+    )
     parser.add_argument("--reindex", action="store_true", help="Force re-indexing and re-analysis, ignoring caches.")
     args = parser.parse_args()
 

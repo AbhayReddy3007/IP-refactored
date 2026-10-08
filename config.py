@@ -150,3 +150,14 @@ GCS_EXCEL = os.getenv("GCS_EXCEL", "patent_exports")
 # to a single task when run locally / outside Cloud Run.
 CLOUD_RUN_TASK_INDEX = int(os.getenv("CLOUD_RUN_TASK_INDEX", "0"))
 CLOUD_RUN_TASK_COUNT = int(os.getenv("CLOUD_RUN_TASK_COUNT", "1"))
+
+# ─────────────────────────────────────────────
+# Drug selection (dimension_1.py)
+# ─────────────────────────────────────────────
+# Optional. When set, dimension_1.py runs ONLY for the drug(s) named here
+# instead of discovering every drug folder under GCS_PATENTS_PREFIX.
+# Accepts a single drug name, or multiple drug names separated by commas,
+# e.g. "Semaglutide" or "Semaglutide, Tirzepatide, Liraglutide".
+# Leave unset / empty to process every drug found in GCS (the default,
+# sharded-discovery behaviour).
+DRUG_NAME = os.getenv("DRUG_NAME", "")
