@@ -56,7 +56,7 @@ from typing import Dict, List, Optional
 from . import config
 from . import gcp_utils
 from .chunking.patent_filter import patent_filter
-from .chunking.drug_list import list_patent_files_for_glp1_drugs
+from .chunking.drug_list import list_glp1_patent_files
 from .chunking.indexer import indexer as run_indexer, get_or_create_collection
 from .blocking_analysis import run_blocking_analysis
 from .primary_market_entry_horizon import (
@@ -102,8 +102,8 @@ def list_glp1_drug_folders() -> List[str]:
         print("[DISCOVERY] GCS_BUCKET not set — cannot list patent files")
         return []
 
-    files_by_drug = list_patent_files_for_glp1_drugs()
-    drugs = sorted(d for d, refs in files_by_drug.items() if refs)
+    files_by_drug = list_glp1_patent_files()
+    drugs = sorted(files_by_drug.keys())
     print(f"[DISCOVERY] {len(drugs)} GLP-1 drug(s) with patents in gs://{config.GCS_BUCKET}/{config.GCS_PATENTS_PREFIX}/: {drugs}")
     return drugs
 
