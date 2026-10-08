@@ -3,11 +3,15 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Service account JSON inside the container
-ENV GOOGLE_APPLICATION_CREDENTIALS=/app/service-account.json
-ENV BQ_SERVICE_ACCOUNT=/app/service-account.json
-ENV GCS_SERVICE_ACCOUNT=/app/service-account.json
-ENV GOOGLE_SERVICE_KEY=/app/service-account.json
+# No GOOGLE_APPLICATION_CREDENTIALS / BQ_SERVICE_ACCOUNT / GCS_SERVICE_ACCOUNT /
+# GOOGLE_SERVICE_KEY are set here on purpose. Leaving them unset means Google's
+# auth libraries never look for a key file at all — they fall straight through
+# to Application Default Credentials, which on Cloud Run resolves automatically
+# to whichever service account is selected in the Job's Security tab (no file,
+# no env var, no IAM console step needed if that account already has the
+# required roles). Do NOT re-add these env vars unless you are intentionally
+# shipping a service-account.json file in the image (not recommended) or
+# mounting one from Secret Manager at that exact path.
 
 WORKDIR /app
 
