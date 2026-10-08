@@ -86,10 +86,12 @@ def check_drug(drug_name: str) -> None:
 
     # ── 1. Where in GCS it's looking ────────────────────────────────────────
     prefix = config.GCS_PATENTS_PREFIX.rstrip("/") + "/"
+    drug_lower = drug_name.strip().lower()
     drug_norm = normalize(drug_name)
     print(f"\n[1] GCS folder search")
     print(f"    Searching under: gs://{config.GCS_BUCKET}/{prefix}")
-    print(f"    Normalised drug name for folder matching: '{drug_norm}'")
+    print(f"    Match order: (a) exact lower(folder_name) == '{drug_lower}', "
+          f"then (b) fuzzy normalised == '{drug_norm}'")
 
     if not config.GCS_BUCKET:
         print("    !! GCS_BUCKET not set — cannot list anything. Stopping.")
@@ -102,22 +104,31 @@ def check_drug(drug_name: str) -> None:
         return
 
     prefix_depth = len(prefix.split("/")) - 1
-    drug_folders: Dict[str, str] = {}
+    drug_folders_exact: Dict[str, str] = {}
+    drug_folders_fuzzy: Dict[str, str] = {}
     for blob in all_blobs:
         parts = blob.name.split("/")
         if len(parts) > prefix_depth + 1:
             folder_name = parts[prefix_depth]
-            norm = normalize(folder_name)
-            if norm not in drug_folders:
-                drug_folders[norm] = "/".join(parts[: prefix_depth + 1]) + "/"
+            folder_prefix = "/".join(parts[: prefix_depth + 1]) + "/"
+            exact_key = folder_name.strip().lower()
+            fuzzy_key = normalize(folder_name)
+            if exact_key not in drug_folders_exact:
+                drug_folders_exact[exact_key] = folder_prefix
+            if fuzzy_key not in drug_folders_fuzzy:
+                drug_folders_fuzzy[fuzzy_key] = folder_prefix
 
-    if drug_norm not in drug_folders:
-        print(f"    No GCS folder matches '{drug_name}'.")
-        print(f"    Folders that DO exist under this prefix: {sorted(drug_folders.keys()) or '(none found)'}")
+    if drug_lower in drug_folders_exact:
+        matched_prefix = drug_folders_exact[drug_lower]
+        print(f"    (a) Exact match found: gs://{config.GCS_BUCKET}/{matched_prefix}")
+    elif drug_norm in drug_folders_fuzzy:
+        matched_prefix = drug_folders_fuzzy[drug_norm]
+        print(f"    (a) No exact match for '{drug_lower}'.")
+        print(f"    (b) Fuzzy match found instead: gs://{config.GCS_BUCKET}/{matched_prefix}")
+    else:
+        print(f"    No GCS folder matches '{drug_name}' — neither exact nor fuzzy.")
+        print(f"    Folders that DO exist under this prefix: {sorted(drug_folders_exact.keys()) or '(none found)'}")
         return
-
-    matched_prefix = drug_folders[drug_norm]
-    print(f"    Matched GCS folder: gs://{config.GCS_BUCKET}/{matched_prefix}")
 
     pdf_blobs = [
         b for b in all_blobs

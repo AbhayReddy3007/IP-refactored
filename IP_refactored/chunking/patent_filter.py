@@ -117,18 +117,25 @@ def get_approved_patent_numbers(molecule_name: Optional[str] = None) -> List[str
 
 def patent_filter(drug_name: str) -> List[Dict]:
     """
-    Lists PDF filenames for *drug_name* from GCS (fuzzy folder-name match),
-    then restricts the result to only files whose patent number is approved
-    in patent_master for this molecule: patent_status = 'PDF Downloaded'
-    and confidence > 0.3.
+    Lists PDF filenames for *drug_name* from GCS, then restricts the result
+    to only files whose patent number is approved in patent_master for this
+    molecule: patent_status = 'PDF Downloaded' and confidence > 0.3.
+
+    GCS folder matching tries, in order:
+      1. Exact match: lower(drug_name) == lower(folder_name).
+      2. Only if no exact match exists: fuzzy match — both sides run
+         through utils.normalize() (lowercase, spaces/hyphens/underscores
+         removed), so folder-naming variants like "BGM 0504" / "BGM_0504"
+         / "bgm0504" still resolve to the same folder.
 
     Matching a BigQuery patent_number to a GCS filename is punctuation/case
     insensitive (e.g. patent_number "US-1,234,567-B2" matches filename
     "US1234567B2.pdf") via utils.normalize_patent_number().
 
     Args:
-        drug_name: Drug name to look up — must fuzzy-match a GCS folder name
-                   under gs://{GCS_BUCKET}/{GCS_PATENTS_PREFIX}/, and is also
+        drug_name: Drug name to look up — must match a GCS folder name
+                   under gs://{GCS_BUCKET}/{GCS_PATENTS_PREFIX}/ (exact,
+                   case-insensitive, or failing that fuzzy), and is also
                    used as molecule_name against patent_master.
 
     Returns:
@@ -142,6 +149,7 @@ def patent_filter(drug_name: str) -> List[Dict]:
         return []
 
     prefix = config.GCS_PATENTS_PREFIX.rstrip("/") + "/"
+    drug_lower = drug_name.strip().lower()
     drug_norm = normalize(drug_name)
 
     logger.info("[PATENT_FILTER] Listing PDFs for '%s' under gs://%s/%s", drug_name, config.GCS_BUCKET, prefix)
@@ -150,26 +158,37 @@ def patent_filter(drug_name: str) -> List[Dict]:
     logger.info("[PATENT_FILTER] Found %d total object(s) under prefix", len(all_blobs))
 
     prefix_depth = len(prefix.split("/")) - 1
-    drug_folders: Dict[str, str] = {}
+    drug_folders_exact: Dict[str, str] = {}
+    drug_folders_fuzzy: Dict[str, str] = {}
     for blob in all_blobs:
         parts = blob.name.split("/")
         if len(parts) > prefix_depth + 1:
             folder_name = parts[prefix_depth]
-            norm = normalize(folder_name)
-            if norm not in drug_folders:
-                drug_folders[norm] = "/".join(parts[: prefix_depth + 1]) + "/"
+            folder_prefix = "/".join(parts[: prefix_depth + 1]) + "/"
+            exact_key = folder_name.strip().lower()
+            fuzzy_key = normalize(folder_name)
+            if exact_key not in drug_folders_exact:
+                drug_folders_exact[exact_key] = folder_prefix
+            if fuzzy_key not in drug_folders_fuzzy:
+                drug_folders_fuzzy[fuzzy_key] = folder_prefix
 
-    logger.debug("[PATENT_FILTER] Drug folders found: %s", list(drug_folders.keys()))
+    logger.debug("[PATENT_FILTER] Drug folders found: %s", list(drug_folders_exact.keys()))
 
-    if drug_norm not in drug_folders:
+    if drug_lower in drug_folders_exact:
+        matched_prefix = drug_folders_exact[drug_lower]
+        logger.info("[PATENT_FILTER] Exact match on lower(folder_name): %s", matched_prefix)
+    elif drug_norm in drug_folders_fuzzy:
+        matched_prefix = drug_folders_fuzzy[drug_norm]
+        logger.info(
+            "[PATENT_FILTER] No exact match for '%s' — fell back to fuzzy match (normalised '%s'): %s",
+            drug_name, drug_norm, matched_prefix,
+        )
+    else:
         logger.warning(
-            "[PATENT_FILTER] No folder matching '%s' (normalised: '%s'). Available: %s",
-            drug_name, drug_norm, list(drug_folders.keys()),
+            "[PATENT_FILTER] No folder matching '%s' (exact or fuzzy '%s'). Available: %s",
+            drug_name, drug_norm, list(drug_folders_exact.keys()),
         )
         return []
-
-    matched_prefix = drug_folders[drug_norm]
-    logger.info("[PATENT_FILTER] Matched folder prefix: %s", matched_prefix)
 
     pdf_blobs = [
         b for b in all_blobs
