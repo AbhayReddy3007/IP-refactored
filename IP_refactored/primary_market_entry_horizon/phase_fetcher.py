@@ -3,15 +3,29 @@ phase_fetcher.py
 ─────────────────
 Handles:
   - Fetching clinical development stage from BigQuery (clinical_efficacy table)
+  - Fetching clinical development stage from BigQuery (drug-details/"drug
+    list" table — the same view chunking/drug_list.py resolves the GLP-1
+    drug list from)
   - Loading fallback phase data from a local Excel sheet
-  - Merging BQ + fallback stages per jurisdiction (US / EP)
+  - Merging clinical_efficacy + drug_details + fallback stages per
+    jurisdiction (US / EP / JP / CN / KR / IN / AU / CA / BR / MX / TW / RU /
+    PL / NL / ES)
   - Assigning phase_at_filing to each patent dict
+
+Phase normalisation and jurisdiction/geography matching (roman numerals,
+combined phases like "2/3", country-name <-> country-code aliases, the
+Drug_Geo_New-with-Drug_Geography-fallback trick, and "pick the single
+highest-priority phase pooled across BOTH sources" merge rule) follow the
+same logic used in the reference combine_master_loe.py script's
+_norm_phase() / _jurisdiction_token() / _location_tokens() /
+_vwd_geo_tokens() / _vwd_geo_tokens_combined() / _pick_best_phase_multi().
 """
 
 import asyncio
+import os
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 from google.cloud import bigquery
@@ -41,8 +55,33 @@ _TIMELINE_STAGES = [
 ]
 _STAGE_RANK: Dict[str, int] = {s: i for i, s in enumerate(_TIMELINE_STAGES)}
 
-print(f"[BQ] Config loaded: {BQ_PROJECT_ID}.{BQ_DATASET_ID}.{BQ_TABLE_NAME} "
-      f"| drug_details: {BQ_PROJECT_ID}.{BQ_DATASET_ID}.{BQ_DRUG_DETAILS_TABLE}")
+
+def _resolve_fq_table(table_name: str, project_id: str, dataset_id: str) -> str:
+    """If table_name is already fully-qualified ("project.dataset.table" —
+    2 dots), use it as-is (e.g. CLINICAL_EFFICACY_TABLE =
+    "cognito-dev-380506.data_mart.clinical_efficacy_glp1", a different GCP
+    project from the rest of the pipeline). Otherwise treat it as a bare
+    table/view name under project_id.dataset_id."""
+    if table_name.count(".") == 2:
+        return table_name
+    return f"{project_id}.{dataset_id}.{table_name}"
+
+
+def _clinical_project_dataset() -> Tuple[str, str]:
+    """Project/dataset that "the drug list table" (BQ_DRUG_DETAILS_TABLE,
+    e.g. vw_drug_details_full) should be looked up in: the SAME
+    project/dataset as BQ_TABLE_NAME (clinical_efficacy) whenever that's
+    fully-qualified, since the reference logic keeps both tables side by
+    side in one dataset (cognito-dev-380506.data_mart). Falls back to
+    BQ_PROJECT_ID/BQ_DATASET_ID if BQ_TABLE_NAME is just a bare name."""
+    parts = BQ_TABLE_NAME.split(".")
+    if len(parts) == 3:
+        return parts[0], parts[1]
+    return BQ_PROJECT_ID, BQ_DATASET_ID
+
+
+print(f"[BQ] Config loaded: clinical_efficacy={_resolve_fq_table(BQ_TABLE_NAME, BQ_PROJECT_ID, BQ_DATASET_ID)} "
+      f"| drug_details={_resolve_fq_table(BQ_DRUG_DETAILS_TABLE, *_clinical_project_dataset())}")
 
 
 # ─────────────────────────────────────────────
@@ -50,7 +89,7 @@ print(f"[BQ] Config loaded: {BQ_PROJECT_ID}.{BQ_DATASET_ID}.{BQ_TABLE_NAME} "
 # ─────────────────────────────────────────────
 
 def _normalize(name: str) -> str:
-    return re.sub(r"[\s\-_]+", "", name.lower().strip())
+    return re.sub(r"[\s\-_]+", "", str(name or "").lower().strip())
 
 
 # ─────────────────────────────────────────────
@@ -94,45 +133,96 @@ def canonicalise_drug_name(drug_name: str) -> str:
     return drug_name
 
 
-_PHASE_NORMAL_MAP = {
-    # canonical
-    "preclinical":      "Preclinical",
-    "phase 1":          "Phase 1",
-    "phase 2":          "Phase 2",
-    "phase 3":          "Phase 3",
-    "pre-registration": "Pre-registration",
-    "preregistration":  "Pre-registration",
-    "marketed":         "Marketed",
-    # Roman numerals (BigQuery SQL CASE outputs these)
-    "phase i":          "Phase 1",
-    "phase ii":         "Phase 2",
-    "phase iii":        "Phase 3",
-    # bare forms
-    "i":   "Phase 1", "1": "Phase 1",
-    "ii":  "Phase 2", "2": "Phase 2",
-    "iii": "Phase 3", "3": "Phase 3",
-    "4":   "Marketed",
+# ─────────────────────────────────────────────
+# Phase normalisation — same logic as the reference script's _norm_phase()
+# ─────────────────────────────────────────────
+
+_ROMAN_PHASE_NUMERALS = {"i": 1, "ii": 2, "iii": 3, "iv": 4}
+
+# canonical (lowercase, as produced by _norm_phase) -> internal timeline label
+_NORM_TO_TIMELINE: Dict[str, str] = {
+    "preclinical":       "Preclinical",
+    "phase 1":           "Phase 1",
+    "phase 2":           "Phase 2",
+    "phase 3":           "Phase 3",
+    "phase 4":           "Marketed",
+    "pre-registration":  "Pre-registration",
+    "approved/marketed": "Marketed",
 }
 
 
+def _norm_phase(s) -> str:
+    """Normalise any phase spelling down to a canonical form:
+      'Phase 3', 'Phase3', 'phase  3', '3', 'P3', 'PHASE-3'  -> 'phase 3'
+      '3b', '3a', '3B'                                        -> 'phase 3'
+      '2/3'  (combined phase)                                 -> 'phase 3' (highest)
+      'Phase III', 'PhaseIII', 'phase iii'                   -> 'phase 3'
+      3   (integer from BQ)                                   -> 'phase 3'
+      3.0 (float from BQ)                                     -> 'phase 3'
+      4, 'Phase 4'                                            -> 'phase 4' (-> Marketed)
+      'Approved', 'Marketed', 'Approved/Marketed'            -> 'approved/marketed'
+      'Pre-Registration', 'pre registration', 'preregistration' -> 'pre-registration'
+      'Preclinical', 'Discovery'                              -> 'preclinical'
+    Case-insensitive and whitespace/punctuation-insensitive throughout.
+    Recognises both Arabic digits and roman numerals (I/II/III/IV).
+    Returns '' if the input is blank/unrecognisable."""
+    if isinstance(s, float):
+        if pd.isna(s):
+            return ""
+        s = str(int(s)) if s == int(s) else str(s)
+    elif isinstance(s, int):
+        s = str(s)
+
+    s = re.sub(r"\s+", " ", str(s or "").strip().lower())
+    if not s:
+        return ""
+    if "approv" in s or "market" in s:
+        return "approved/marketed"
+    if "pre" in s and "regist" in s:
+        return "pre-registration"
+    if "preclin" in s or "discovery" in s:
+        return "preclinical"
+
+    # Combined-phase values like "2/3" or "2-3": split on non-digit
+    # separators and take the highest digit present so "2/3" -> "phase 3".
+    digit_parts = re.findall(r"\d+", s)
+    if digit_parts:
+        best = max(int(p) for p in digit_parts)
+        return f"phase {best}"
+
+    # No Arabic digit found — try a roman numeral instead, e.g. "Phase II",
+    # "PhaseIII", "phase iii". Word-by-word first (whitespace/punctuation
+    # already separates the numeral)...
+    for token in re.split(r"[^a-z0-9]+", s):
+        if token in _ROMAN_PHASE_NUMERALS:
+            return f"phase {_ROMAN_PHASE_NUMERALS[token]}"
+    # ...then strip a "phase"/"ph"/"p" prefix off the compact string, e.g.
+    # "PhaseIII" -> "phaseiii" -> strip "phase" -> "iii".
+    compact = re.sub(r"[^a-z0-9]", "", s)
+    stripped = re.sub(r"^(phase|ph|p)", "", compact)
+    if stripped in _ROMAN_PHASE_NUMERALS:
+        return f"phase {_ROMAN_PHASE_NUMERALS[stripped]}"
+    return s
+
+
 def _normalize_phase(p: Optional[str]) -> Optional[str]:
-    """Canonicalise phase strings (e.g. 'Phase III' -> 'Phase 3') so they
-    can be compared via _STAGE_RANK.  Returns None for falsy / unknown input.
-    """
+    """Canonicalise a phase string to an internal timeline label (e.g.
+    'Phase III' -> 'Phase 3'), via _norm_phase(). Returns None for falsy /
+    truly unrecognisable input (kept for backward compatibility with
+    callers that expect a timeline label, not the lowercase _norm_phase form)."""
     if p is None:
         return None
-    s = str(p).strip()
-    if not s:
+    norm = _norm_phase(p)
+    if not norm:
         return None
-    return _PHASE_NORMAL_MAP.get(s.lower(), s)
+    return _NORM_TO_TIMELINE.get(norm, str(p).strip())
 
 
 def _highest_phase(a: Optional[str], b: Optional[str]) -> Optional[str]:
     """Returns whichever phase is further along. None is lower than any real stage.
 
-    Both inputs are normalised first (Roman numerals, varying case/spacing) so
-    e.g. 'Phase III' from BigQuery and 'Phase 3' from the fallback Excel
-    compare correctly.
+    Both inputs are normalised first (Roman numerals, varying case/spacing,
+    combined phases) so e.g. 'Phase III' and '2/3' compare correctly.
     """
     a = _normalize_phase(a)
     b = _normalize_phase(b)
@@ -143,9 +233,143 @@ def _highest_phase(a: Optional[str], b: Optional[str]) -> Optional[str]:
     return a if _STAGE_RANK.get(a, -1) >= _STAGE_RANK.get(b, -1) else b
 
 
+# Priority order used when pooling phases from BOTH sources for one
+# drug+jurisdiction (same shape as the reference script's
+# _PHASE_PRIORITY_ORDER, extended to the full 6-stage timeline since patent
+# phase-at-filing cares about Preclinical/Phase 1 too, not just the phases
+# that have an Est.-Approval-Year x-value in the reference script).
+_PHASE_PRIORITY_ORDER = [_NORM_TO_TIMELINE[k] for k in
+                         ("approved/marketed", "pre-registration", "phase 3", "phase 2", "phase 1", "preclinical")]
+
+
+def _pick_best_phase_multi(clin_phases: Set[str], vwd_phases: Set[str]) -> Tuple[Optional[str], Optional[str]]:
+    """Pool ALL phases (already normalised to internal timeline labels)
+    present in clinical_efficacy and drug_details for one drug+jurisdiction,
+    pick the single highest-priority one across both combined, then report
+    which source(s) have it. 'clinical' is preferred as the source label
+    when both have it (same tie-break as the reference script).
+
+    Returns (best_phase, source) or (None, None) if neither set has
+    anything recognised."""
+    all_phases = {p for p in (clin_phases | vwd_phases) if p}
+    if not all_phases:
+        return None, None
+    for phase in _PHASE_PRIORITY_ORDER:
+        if phase in all_phases:
+            source = "clinical" if phase in clin_phases else "vwd"
+            return phase, source
+    return None, None
+
+
 # ─────────────────────────────────────────────
-# BigQuery fetch
+# Jurisdiction / geography token matching — same logic as the reference
+# script's _jurisdiction_token() / _location_tokens() / _vwd_geo_tokens() /
+# _vwd_geo_tokens_combined()
 # ─────────────────────────────────────────────
+
+# Two-letter country code <-> full name synonyms for countries beyond US/EU
+# that show up in trial_location / Drug_Geo_New. Canonical form is the code.
+_COUNTRY_CODE_ALIASES = {
+    "CN": "CN", "CHINA": "CN",
+    "AU": "AU", "AUSTRALIA": "AU",
+    "BR": "BR", "BRAZIL": "BR",
+    "CA": "CA", "CANADA": "CA",
+    "ES": "ES", "SPAIN": "ES",
+    "IN": "IN", "INDIA": "IN",
+    "JP": "JP", "JAPAN": "JP",
+    "KR": "KR", "SOUTH KOREA": "KR", "KOREA": "KR",
+    "MX": "MX", "MEXICO": "MX",
+    "PL": "PL", "POLAND": "PL",
+    "RU": "RU", "RUSSIA": "RU",
+    "TW": "TW", "TAIWAN": "TW",
+    "NL": "NL", "NETHERLANDS": "NL",
+}
+
+_US_NAMES = {"US", "USA", "U.S.", "U.S.A.", "UNITED STATES", "UNITED STATES OF AMERICA", "UNITES STATES"}
+_EU_NAMES = {"EU", "EP", "EUROPE", "EUROPEAN UNION"}
+
+ALL_JURISDICTION_TOKENS = {"US", "EP"} | set(_COUNTRY_CODE_ALIASES.values())
+
+
+def _jurisdiction_token(jurisdiction) -> Optional[str]:
+    """Map a single jurisdiction/country string to its canonical token
+    ('US', 'EP', or a country code like 'CN'/'AU'/...). Returns None for an
+    unrecognised value."""
+    j = re.sub(r"\s+", " ", str(jurisdiction or "").strip()).upper()
+    if not j:
+        return None
+    if j in _US_NAMES:
+        return "US"
+    if j in _EU_NAMES:
+        return "EP"
+    if j in _COUNTRY_CODE_ALIASES:
+        return _COUNTRY_CODE_ALIASES[j]
+    return None
+
+
+def _split_tokens(value) -> Set[str]:
+    """Split a comma/semicolon/slash-separated geography/location string
+    into a set of canonical jurisdiction tokens. 'Global' (or 'Worldwide')
+    expands to every known token."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return set()
+    raw = str(value).strip().strip("'\"").strip()
+    if not raw:
+        return set()
+    if raw.upper() in ("GLOBAL", "WORLDWIDE"):
+        return set(ALL_JURISDICTION_TOKENS)
+
+    tokens: Set[str] = set()
+    for part in re.split(r"[,;/]+", raw):
+        p = re.sub(r"\s+", " ", part.strip().strip("'\"").strip()).upper()
+        if not p:
+            continue
+        if p in ("GLOBAL", "WORLDWIDE"):
+            tokens |= set(ALL_JURISDICTION_TOKENS)
+            continue
+        token = _jurisdiction_token(p)
+        if token:
+            tokens.add(token)
+    return tokens
+
+
+def _location_tokens(location) -> Set[str]:
+    """Jurisdiction tokens present in a clinical_efficacy trial_location
+    value, e.g. 'US/EU', 'United States, China', 'Global'."""
+    return _split_tokens(location)
+
+
+def _vwd_geo_tokens(geo) -> Set[str]:
+    """Jurisdiction tokens present in a drug_details Drug_Geo_New (or
+    Drug_Geography) value, e.g. 'US, Germany, Japan'."""
+    return _split_tokens(geo)
+
+
+def _vwd_geo_tokens_combined(geo_new, geo_fallback) -> Set[str]:
+    """Same jurisdiction tokens as _vwd_geo_tokens, preferring Drug_Geo_New
+    but falling back to Drug_Geography whenever Drug_Geo_New produces NO
+    tokens at all for this row (Drug_Geo_New has been observed blank for
+    some single-jurisdiction drugs despite Drug_Geography holding a valid
+    value)."""
+    tokens = _vwd_geo_tokens(geo_new)
+    if tokens:
+        return tokens
+    return _vwd_geo_tokens(geo_fallback)
+
+
+# ─────────────────────────────────────────────
+# BigQuery fetch — clinical_efficacy
+# ─────────────────────────────────────────────
+
+def _get_bq_client(project_id: str, service_account_path: Optional[str]) -> bigquery.Client:
+    if service_account_path and os.path.exists(service_account_path):
+        credentials = service_account.Credentials.from_service_account_file(
+            service_account_path,
+            scopes=["https://www.googleapis.com/auth/cloud-platform"],
+        )
+        return bigquery.Client(credentials=credentials, project=project_id)
+    return bigquery.Client(project=project_id)
+
 
 def import_from_gbq(
     drug_name:            str,
@@ -155,93 +379,27 @@ def import_from_gbq(
     service_account_path: Optional[str] = None,
 ) -> pd.DataFrame:
     """
-    Fetches clinical phase data from the `clinical_efficacy` table.
-
-    Column mapping:
-        molecule_name   → cleaned_generic_name
-        trial_location  → Drug_Geography  (comma-separated countries, split into rows)
-        phase           → highest_development_stage
-
-    Phase normalisation:
-        1, 1a, 1b, Phase 1, Phase I  → 'Phase I'
-        2, 2a, 2b, Phase 2, Phase II → 'Phase II'
-        3, 3a, 3b, Phase 3, Phase III→ 'Phase III'
-        4, Phase 4                   → 'Marketed'
+    Fetches raw clinical phase rows for `drug_name` from the
+    clinical_efficacy table: molecule_name, trial_location, phase,
+    phase_status/trial_status. No phase bucketing happens in SQL — phase
+    normalisation and jurisdiction splitting are done in Python via
+    _norm_phase() / _location_tokens(), same as the reference script, so
+    the exact same string forms (roman numerals, combined "2/3" phases,
+    "Global" locations, etc.) are handled consistently with drug_details.
     """
     try:
-        if service_account_path:
-            credentials = service_account.Credentials.from_service_account_file(
-                service_account_path,
-                scopes=["https://www.googleapis.com/auth/cloud-platform"],
-            )
-            client = bigquery.Client(credentials=credentials, project=project_id)
-        else:
-            client = bigquery.Client(project=project_id)
+        client = _get_bq_client(project_id, service_account_path)
+        fq_table = _resolve_fq_table(table_name, project_id, dataset_id)
 
-        fq_table = f"{project_id}.{dataset_id}.{table_name}"
-
-        query = rf"""
-        WITH filtered AS (
-          SELECT
-            molecule_name                                AS cleaned_generic_name,
-            -- Tag rows with no usable trial_location so we still surface the
-            -- phase, instead of dropping the row via UNNEST on a NULL/empty list.
-            CASE
-              WHEN COALESCE(NULLIF(TRIM(trial_location), ''), NULL) IS NULL
-                THEN '__UNKNOWN__'
-              ELSE TRIM(trial_location_part)
-            END                                          AS Drug_Geography,
-            CASE
-              WHEN REGEXP_CONTAINS(LOWER(TRIM(phase)), r'^4')   THEN 'Marketed'
-              WHEN REGEXP_CONTAINS(LOWER(TRIM(phase)), r'^iii') THEN 'Phase III'
-              WHEN REGEXP_CONTAINS(LOWER(TRIM(phase)), r'^3')   THEN 'Phase III'
-              WHEN REGEXP_CONTAINS(LOWER(TRIM(phase)), r'^ii')  THEN 'Phase II'
-              WHEN REGEXP_CONTAINS(LOWER(TRIM(phase)), r'^2')   THEN 'Phase II'
-              WHEN REGEXP_CONTAINS(LOWER(TRIM(phase)), r'^i')   THEN 'Phase I'
-              WHEN REGEXP_CONTAINS(LOWER(TRIM(phase)), r'^1')   THEN 'Phase I'
-              ELSE TRIM(phase)
-            END                                          AS highest_development_stage,
-            CASE
-              WHEN REGEXP_CONTAINS(LOWER(TRIM(phase)), r'^4')   THEN 5
-              WHEN REGEXP_CONTAINS(LOWER(TRIM(phase)), r'^iii') THEN 3
-              WHEN REGEXP_CONTAINS(LOWER(TRIM(phase)), r'^3')   THEN 3
-              WHEN REGEXP_CONTAINS(LOWER(TRIM(phase)), r'^ii')  THEN 2
-              WHEN REGEXP_CONTAINS(LOWER(TRIM(phase)), r'^2')   THEN 2
-              WHEN REGEXP_CONTAINS(LOWER(TRIM(phase)), r'^i')   THEN 1
-              WHEN REGEXP_CONTAINS(LOWER(TRIM(phase)), r'^1')   THEN 1
-              ELSE 0
-            END                                          AS stage_rank,
-            TRIM(COALESCE(trial_status, ''))              AS trial_status
-          FROM `{fq_table}`
-          -- LEFT JOIN against the split so rows with NULL/empty trial_location
-          -- still appear (with trial_location_part = NULL, which the CASE
-          -- above turns into '__UNKNOWN__').
-          LEFT JOIN UNNEST(SPLIT(COALESCE(NULLIF(TRIM(trial_location), ''), ''), ',')) AS trial_location_part
-          WHERE LOWER(REGEXP_REPLACE(
-                  COALESCE(molecule_name, ''),
-                  r'[\s\-_]+', ''
-                )) = LOWER(REGEXP_REPLACE(@drug_name, r'[\s\-_]+', ''))
-        ),
-        ranked AS (
-          SELECT
-            cleaned_generic_name,
-            Drug_Geography,
-            highest_development_stage,
-            trial_status,
-            ROW_NUMBER() OVER (
-              PARTITION BY cleaned_generic_name, Drug_Geography
-              ORDER BY stage_rank DESC
-            ) AS rn
-          FROM filtered
-        )
+        query = f"""
         SELECT
-          cleaned_generic_name,
-          Drug_Geography,
-          highest_development_stage,
-          trial_status
-        FROM ranked
-        WHERE rn = 1
-        ORDER BY Drug_Geography
+            molecule_name,
+            trial_location,
+            phase,
+            trial_status
+        FROM `{fq_table}`
+        WHERE LOWER(REGEXP_REPLACE(COALESCE(molecule_name, ''), r'[\\s\\-_]+', ''))
+              = LOWER(REGEXP_REPLACE(@drug_name, r'[\\s\\-_]+', ''))
         """
 
         job_config = bigquery.QueryJobConfig(
@@ -251,258 +409,174 @@ def import_from_gbq(
         )
 
         df = client.query(query, job_config=job_config).to_dataframe()
-        print(f"[BQ] Fetched {len(df)} row(s) from BigQuery")
+        print(f"[BQ] clinical_efficacy: fetched {len(df)} raw row(s) for '{drug_name}' from {fq_table}")
         for _, row in df.head(5).iterrows():
-            print(
-                f"[BQ]   {row.get('cleaned_generic_name')} | "
-                f"{row.get('Drug_Geography')} | "
-                f"{row.get('highest_development_stage')}"
-            )
+            print(f"[BQ]   {row.get('molecule_name')} | {row.get('trial_location')} | {row.get('phase')}")
         return df
 
     except Exception as e:
-        print(f"[BQ] Query failed: {e}")
+        print(f"[BQ] clinical_efficacy query failed: {e}")
         return pd.DataFrame()
 
 
-def _match_drug_name_in_bq(drug_name: str, df: pd.DataFrame) -> Dict[str, str]:
-    """Strict matching only — exact or normalised. No substring matching."""
-    if df.empty or "cleaned_generic_name" not in df.columns:
-        return {}
-
-    drug_norm    = _normalize(drug_name)
-    matched_rows = []
+def _phases_by_jurisdiction_clinical(df: pd.DataFrame) -> Tuple[Dict[str, Set[str]], Dict[str, str]]:
+    """From raw clinical_efficacy rows (already filtered to one drug),
+    build {jurisdiction_token: {normalised_phase, ...}} plus a best
+    trial_status per jurisdiction (first non-blank one seen for that
+    jurisdiction's winning phase, informational only)."""
+    phases_by_jur: Dict[str, Set[str]] = {}
+    status_by_jur: Dict[str, str] = {}
+    if df.empty or "phase" not in df.columns:
+        return phases_by_jur, status_by_jur
 
     for _, row in df.iterrows():
-        bq_name = str(row["cleaned_generic_name"] or "")
-        bq_norm = _normalize(bq_name)
-        if bq_name.lower() == drug_name.lower():
-            print(f"[BQ MATCH] Exact: '{drug_name}' → '{bq_name}'")
-            matched_rows.append(row)
-        elif bq_norm == drug_norm:
-            print(f"[BQ MATCH] Normalised: '{drug_name}' → '{bq_name}'")
-            matched_rows.append(row)
-
-    if not matched_rows:
-        print(f"[BQ MATCH] No match found for '{drug_name}'")
-        return {}
-
-    geography_stages: Dict[str, str] = {}
-    _US_GEOS = {"united states", "us", "usa", "united states of america"}
-    _EU_GEOS = {"eu", "europe", "european union"}
-
-    best_overall_stage: Optional[str] = None
-    best_overall_trial_status: Optional[str] = None
-    geography_trial_status: Dict[str, str] = {}
-
-    for row in matched_rows:
-        raw_geo  = str(row.get("Drug_Geography") or "")
-        stage    = str(row.get("highest_development_stage") or "")
-        trial_st = str(row.get("trial_status") or "").strip()
-
-        best_overall_stage = _highest_phase(best_overall_stage, stage)
-        if trial_st and trial_st.lower() not in ("", "nan", "none"):
-            best_overall_trial_status = trial_st
-
-        if raw_geo.strip() == "__UNKNOWN__":
+        phase_label = _normalize_phase(row.get("phase"))
+        if phase_label is None:
             continue
+        status = str(row.get("trial_status") or "").strip()
+        tokens = _location_tokens(row.get("trial_location"))
+        if not tokens:
+            continue  # unknown/blank location — contributes to overall fallback separately
+        for jur in tokens:
+            phases_by_jur.setdefault(jur, set()).add(phase_label)
+            if status and status.lower() not in ("", "nan", "none"):
+                # Keep the status associated with the highest-ranked phase seen so far.
+                existing_rank = _STAGE_RANK.get(status_by_jur.get(jur, ""), -1)
+                if _STAGE_RANK.get(phase_label, -1) >= 0:
+                    status_by_jur[jur] = status
+    return phases_by_jur, status_by_jur
 
-        geos = [g.strip() for g in re.split(r"[,;/]", raw_geo) if g.strip()]
-        for geo in geos:
-            geo_lower = geo.lower()
-            if geo_lower in _US_GEOS:
-                canonical = "United States"
-            elif geo_lower in _EU_GEOS:
-                canonical = "EU"
-            else:
-                continue
-            existing = geography_stages.get(canonical)
-            best = _highest_phase(existing, stage)
-            if best != existing:
-                geography_stages[canonical] = best
-                if trial_st and trial_st.lower() not in ("", "nan", "none"):
-                    geography_trial_status[canonical] = trial_st
-                print(f"[BQ MATCH] Geography: '{geo}' -> '{canonical}' | Stage: {best} | Trial: {trial_st}")
 
-    if best_overall_stage and not geography_stages:
-        geography_stages["United States"] = best_overall_stage
-        geography_stages["EU"]            = best_overall_stage
-        if best_overall_trial_status:
-            geography_trial_status["United States"] = best_overall_trial_status
-            geography_trial_status["EU"]            = best_overall_trial_status
-        print(
-            f"[BQ MATCH] No US/EU geography found -- applying overall phase "
-            f"'{best_overall_stage}' (trial: {best_overall_trial_status}) to both"
+def _overall_phase_clinical(df: pd.DataFrame) -> Optional[str]:
+    """Highest phase across ALL rows for this drug, regardless of location
+    — used as the US/EP fallback when nothing resolves a jurisdiction."""
+    if df.empty or "phase" not in df.columns:
+        return None
+    best = None
+    for raw in df["phase"].dropna():
+        best = _highest_phase(best, _normalize_phase(raw))
+    return best
+
+
+# ─────────────────────────────────────────────
+# BigQuery fetch — drug_details ("the drug list table")
+# ─────────────────────────────────────────────
+
+def _fetch_drug_details_df(
+    drug_name:  str,
+    project_id: str,
+    dataset_id: str,
+    sa_path:    Optional[str] = None,
+) -> pd.DataFrame:
+    """Fetches raw rows for `drug_name` from BQ_DRUG_DETAILS_TABLE (the
+    "drug list" view, e.g. vw_drug_details_full): Cleaned_Generic_Name,
+    Highest_Development_Stage, Drug_Geo_New, Drug_Geography. Column names
+    are matched case-insensitively against whatever the view actually
+    returns, since vw_drug_details_full's casing can vary."""
+    try:
+        client = _get_bq_client(project_id, sa_path)
+        fq_table = _resolve_fq_table(BQ_DRUG_DETAILS_TABLE, project_id, dataset_id)
+
+        query = f"""
+        SELECT *
+        FROM `{fq_table}`
+        WHERE LOWER(REGEXP_REPLACE(COALESCE(cleaned_generic_name, ''), r'[\\s\\-_]+', ''))
+              = LOWER(REGEXP_REPLACE(@drug_name, r'[\\s\\-_]+', ''))
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("drug_name", "STRING", drug_name),
+            ]
         )
-
-    geography_stages["_trial_status"] = geography_trial_status
-    return geography_stages
-
-
-def _bq_stage_to_timeline(geography_stages: Dict[str, str], drug_name: str) -> Dict:
-    _BQ_STAGE_MAP = {
-        "marketed":         "Marketed",
-        "pre-registration": "Pre-registration",
-        "phase iii":        "Phase 3",
-        "phase ii":         "Phase 2",
-        "phase i":          "Phase 1",
-        "preclinical":      "Preclinical",
-    }
-
-    mapped: Dict[str, str] = {}
-    for geo, raw_stage in geography_stages.items():
-        internal = _BQ_STAGE_MAP.get(raw_stage.lower().strip(), "Preclinical")
-        if internal not in _TIMELINE_STAGES:
-            internal = "Preclinical"
-        mapped[geo] = internal
-        print(f"[BQ TIMELINE] {drug_name} | {geo}: '{raw_stage}' → '{internal}'")
-
-    current_stage = (
-        max(mapped.values(), key=lambda s: _STAGE_RANK.get(s, 0))
-        if mapped else "Preclinical"
-    )
-    current_idx = _TIMELINE_STAGES.index(current_stage)
-    stage_years = {s: None for s in _TIMELINE_STAGES}
-
-    print(f"[BQ TIMELINE] {drug_name} → Overall: '{current_stage}' | Per-geography: {mapped}")
-
-    return {
-        "current_stage":    current_stage,
-        "all_stages":       _TIMELINE_STAGES,
-        "completed_stages": _TIMELINE_STAGES[: current_idx + 1],
-        "stage_years":      stage_years,
-        "geography_stages": mapped,
-        "notes":            f"Stage sourced from BigQuery. Per-geography: {mapped}",
-        "source":           "bigquery",
-        "drug_name":        drug_name,
-    }
+        df = client.query(query, job_config=job_config).to_dataframe()
+        print(f"[DRUG_DETAILS] {fq_table}: fetched {len(df)} row(s) for '{drug_name}'")
+        return df
+    except Exception as e:
+        print(f"[DRUG_DETAILS] Query failed for '{drug_name}': {e}")
+        return pd.DataFrame()
 
 
-def _geo_to_jurisdiction(geo: str) -> Optional[str]:
-    """Map a geography string to a canonical patent jurisdiction code."""
-    _GEO_MAP = {
-        "united states":            "US",
-        "us":                       "US",
-        "usa":                      "US",
-        "united states of america": "US",
-        "eu":                       "EP",
-        "europe":                   "EP",
-        "european union":           "EP",
-        "japan":                    "JP",
-        "jp":                       "JP",
-        "china":                    "CN",
-        "cn":                       "CN",
-        "korea":                    "KR",
-        "south korea":              "KR",
-        "kr":                       "KR",
-        "india":                    "IN",
-        "in":                       "IN",
-        "australia":                "AU",
-        "au":                       "AU",
-        "canada":                   "CA",
-        "ca":                       "CA",
-        "brazil":                   "BR",
-        "br":                       "BR",
-        "mexico":                   "MX",
-        "mx":                       "MX",
-        "taiwan":                   "TW",
-        "tw":                       "TW",
-        "russia":                   "RU",
-        "ru":                       "RU",
-        "worldwide":                None,   # skip — not a jurisdiction
-        "global":                   None,
-    }
-    return _GEO_MAP.get(geo.strip().lower())
+def _find_col(df: pd.DataFrame, required_tokens) -> Optional[str]:
+    """Find the first column whose normalised (letters/digits only,
+    lowercased) name contains all required_tokens."""
+    def norm(c): return re.sub(r"[^a-z0-9]", "", str(c).lower())
+    for c in df.columns:
+        if all(t in norm(c) for t in required_tokens):
+            return c
+    return None
 
 
+def _phases_by_jurisdiction_vwd(df: pd.DataFrame) -> Dict[str, Set[str]]:
+    """From raw drug_details rows (already filtered to one drug), build
+    {jurisdiction_token: {normalised_phase, ...}}, preferring Drug_Geo_New
+    and falling back to Drug_Geography per-row (_vwd_geo_tokens_combined)."""
+    phases_by_jur: Dict[str, Set[str]] = {}
+    if df.empty:
+        return phases_by_jur
+
+    phase_col = _find_col(df, ["highest", "development", "stage"]) or _find_col(df, ["development", "stage"])
+    geo_col = _find_col(df, ["drug", "geo", "new"]) or _find_col(df, ["drug", "geo"]) or _find_col(df, ["geo"])
+    geo_fallback_col = _find_col(df, ["drug", "geography"])
+
+    if not phase_col:
+        print("[DRUG_DETAILS] No Highest_Development_Stage-like column found — skipping.")
+        return phases_by_jur
+    if not geo_col:
+        print("[DRUG_DETAILS] No Drug_Geo_New-like column found — skipping.")
+        return phases_by_jur
+
+    for _, row in df.iterrows():
+        phase_label = _normalize_phase(row.get(phase_col))
+        if phase_label is None:
+            continue
+        geo_new = row.get(geo_col)
+        geo_fallback = row.get(geo_fallback_col) if geo_fallback_col else None
+        tokens = _vwd_geo_tokens_combined(geo_new, geo_fallback)
+        for jur in tokens:
+            phases_by_jur.setdefault(jur, set()).add(phase_label)
+    return phases_by_jur
+
+
+def _overall_phase_vwd(df: pd.DataFrame) -> Optional[str]:
+    """Highest phase across ALL rows for this drug, regardless of geography."""
+    if df.empty:
+        return None
+    phase_col = _find_col(df, ["highest", "development", "stage"]) or _find_col(df, ["development", "stage"])
+    if not phase_col:
+        return None
+    best = None
+    for raw in df[phase_col].dropna():
+        best = _highest_phase(best, _normalize_phase(raw))
+    return best
+
+
+# Kept for backward compatibility with any external caller that imported
+# the old per-source dict-returning function directly.
 def _fetch_from_drug_details(
     drug_name:  str,
     project_id: str,
     dataset_id: str,
     sa_path:    Optional[str] = None,
 ) -> Dict[str, Optional[str]]:
-    """
-    Fetches phase data from ``vw_drug_details`` table.
-
-    Returns a dict of jurisdiction → phase, e.g.
-    {"US": "Pre-registration", "EP": "Phase 3", "JP": "Phase 3", ...}
-    """
+    df = _fetch_drug_details_df(drug_name, project_id, dataset_id, sa_path)
+    phases_by_jur = _phases_by_jurisdiction_vwd(df)
     result: Dict[str, Optional[str]] = {}
-
-    try:
-        if sa_path and os.path.exists(sa_path):
-            credentials = service_account.Credentials.from_service_account_file(
-                sa_path, scopes=["https://www.googleapis.com/auth/cloud-platform"],
-            )
-            client = bigquery.Client(credentials=credentials, project=project_id)
-        else:
-            client = bigquery.Client(project=project_id)
-
-        fq_table = f"{project_id}.{dataset_id}.{BQ_DRUG_DETAILS_TABLE}"
-
-        query = f"""
-        SELECT
-            Cleaned_Generic_Name,
-            Highest_Development_Stage,
-            Drug_Geography
-        FROM `{fq_table}`
-        WHERE LOWER(REGEXP_REPLACE(
-                COALESCE(Cleaned_Generic_Name, ''),
-                r'[\\s\\-_]+', ''
-              )) = LOWER(REGEXP_REPLACE(@drug_name, r'[\\s\\-_]+', ''))
-          AND Highest_Development_Stage IS NOT NULL
-        """
-
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("drug_name", "STRING", drug_name),
-            ]
-        )
-
-        df = client.query(query, job_config=job_config).to_dataframe()
-        print(f"[DRUG_DETAILS] Fetched {len(df)} row(s) for '{drug_name}'")
-
-        if df.empty:
-            return result
-
-        for _, row in df.iterrows():
-            stage = str(row.get("Highest_Development_Stage") or "").strip()
-            geo_raw = str(row.get("Drug_Geography") or "")
-
-            if not stage:
-                continue
-
-            stage = _normalize_phase(stage) or stage
-
-            # Split by ; , / — handles "United States, China; EU; Japan"
-            geos = [g.strip() for g in re.split(r"[;,/]", geo_raw) if g.strip()]
-
-            matched_any = False
-            for geo in geos:
-                canonical = _geo_to_jurisdiction(geo)
-                if canonical:
-                    result[canonical] = _highest_phase(result.get(canonical), stage)
-                    print(f"[DRUG_DETAILS] {drug_name} | {canonical} → {result[canonical]}")
-                    matched_any = True
-
-            if not matched_any and geos:
-                print(f"[DRUG_DETAILS] {drug_name} | No known jurisdiction in '{geo_raw}'")
-
-        if not any(result.values()) and not df.empty:
-            best = None
-            for _, row in df.iterrows():
-                s = _normalize_phase(str(row.get("Highest_Development_Stage") or "").strip())
-                best = _highest_phase(best, s)
-            if best:
-                print(f"[DRUG_DETAILS] {drug_name} | No geo data — applying '{best}' to all known jurisdictions")
-                for jur in ("US", "EP", "JP", "CN", "KR", "IN", "AU", "CA", "BR", "MX"):
-                    result[jur] = best
-
-    except Exception as e:
-        print(f"[DRUG_DETAILS] Query failed for '{drug_name}': {e}")
-
+    for jur, phases in phases_by_jur.items():
+        best = None
+        for p in phases:
+            best = _highest_phase(best, p)
+        result[jur] = best
+    if not result:
+        overall = _overall_phase_vwd(df)
+        if overall:
+            for jur in ("US", "EP", "JP", "CN", "KR", "IN", "AU", "CA", "BR", "MX"):
+                result[jur] = overall
     return result
 
+
+# ─────────────────────────────────────────────
+# Combined timeline fetch
+# ─────────────────────────────────────────────
 
 async def fetch_clinical_timeline(
     drug_name:          str,
@@ -512,18 +586,21 @@ async def fetch_clinical_timeline(
     bq_service_account: Optional[str] = None,
 ) -> Dict:
     """
-    Queries BigQuery for clinical stage data, then immediately merges
-    the fallback Excel so geography_stages already reflects the highest
-    phase per jurisdiction from both sources.
+    Queries BigQuery (clinical_efficacy + the drug-list/drug_details view)
+    for clinical stage data, pools both sources per jurisdiction (highest
+    priority phase wins, same rule as the reference script's
+    _pick_best_phase_multi), then merges in the fallback Excel, so
+    geography_stages reflects the single best phase per jurisdiction from
+    all three sources.
 
     Returns:
         Timeline dict with keys: current_stage, geography_stages, source, drug_name, …
-        geography_stages is already the fully merged result (BQ + fallback Excel).
+        geography_stages uses "United States"/"EU" (back-compat) plus
+        every other resolved jurisdiction token (US/EP/JP/CN/...).
     """
-    # ── Canonicalise alias -> INN before any lookup ───────────────────────────
+    # ── Canonicalise alias -> INN before any lookup ───────────────────────
     drug_name = canonicalise_drug_name(drug_name)
 
-    # ─────────────────────────────────────────────────────────────────────────
     empty = {
         "current_stage":    None,
         "all_stages":       _TIMELINE_STAGES,
@@ -540,14 +617,14 @@ async def fetch_clinical_timeline(
     _bq_dataset = bq_dataset_id      or BQ_DATASET_ID
     _bq_sa      = bq_service_account or BQ_SERVICE_ACCOUNT
 
-    # ── Step 1: BigQuery (clinical_efficacy) ─────────────────────────────────
-    bq_geography: Dict[str, Optional[str]] = {"United States": None, "EU": None}
+    loop = asyncio.get_event_loop()
 
+    # ── Step 1: BigQuery (clinical_efficacy) — raw rows ──────────────────
+    clinical_df = pd.DataFrame()
     if _bq_table and _bq_project and _bq_dataset:
-        print(f"[TIMELINE] Querying BigQuery clinical_efficacy for '{drug_name}'...")
-        loop = asyncio.get_event_loop()
+        print(f"[TIMELINE] Querying clinical_efficacy for '{drug_name}'...")
         try:
-            df = await loop.run_in_executor(
+            clinical_df = await loop.run_in_executor(
                 None,
                 lambda: import_from_gbq(
                     drug_name            = drug_name,
@@ -557,69 +634,69 @@ async def fetch_clinical_timeline(
                     service_account_path = _bq_sa,
                 ),
             )
-            matched = _match_drug_name_in_bq(drug_name, df)
-            # matched keys are "United States" / "EU"
-            for k, v in matched.items():
-                bq_geography[k] = v
-            print(f"[TIMELINE] clinical_efficacy → {bq_geography}")
         except Exception as e:
-            print(f"[TIMELINE] BigQuery clinical_efficacy error: {e}")
+            print(f"[TIMELINE] clinical_efficacy error: {e}")
     else:
-        print(f"[TIMELINE] No BigQuery config — skipping clinical_efficacy lookup")
+        print("[TIMELINE] No BigQuery config — skipping clinical_efficacy lookup")
 
-    # ── Step 1b: BigQuery (drug_details) ──────────────────────────────────
-    # Additional phase source: `vw_drug_details` has Highest_Development_Stage
-    # and Drug_Geography (semicolon/comma/slash-separated countries).
-    # Returns per-jurisdiction phases: {"US": ..., "EP": ..., "JP": ..., ...}
-    dd_geography: Dict[str, Optional[str]] = {}
+    clin_phases_by_jur, clin_status_by_jur = _phases_by_jurisdiction_clinical(clinical_df)
+    clin_overall = _overall_phase_clinical(clinical_df)
 
-    if _bq_project and _bq_dataset:
-        print(f"[TIMELINE] Querying BigQuery drug_details for '{drug_name}'...")
-        loop = asyncio.get_event_loop()
+    # ── Step 1b: BigQuery (drug_details — "the drug list table") ─────────
+    vwd_df = pd.DataFrame()
+    vwd_project, vwd_dataset = _clinical_project_dataset()
+    if vwd_project and vwd_dataset:
+        print(f"[TIMELINE] Querying drug_details ('{BQ_DRUG_DETAILS_TABLE}') for '{drug_name}'...")
         try:
-            dd_result = await loop.run_in_executor(
+            vwd_df = await loop.run_in_executor(
                 None,
-                lambda: _fetch_from_drug_details(
-                    drug_name   = drug_name,
-                    project_id  = _bq_project,
-                    dataset_id  = _bq_dataset,
-                    sa_path     = _bq_sa,
+                lambda: _fetch_drug_details_df(
+                    drug_name  = drug_name,
+                    project_id = vwd_project,
+                    dataset_id = vwd_dataset,
+                    sa_path    = _bq_sa,
                 ),
             )
-            for k, v in dd_result.items():
-                dd_geography[k] = v
-            print(f"[TIMELINE] drug_details → {dd_geography}")
         except Exception as e:
-            print(f"[TIMELINE] BigQuery drug_details error: {e}")
+            print(f"[TIMELINE] drug_details error: {e}")
 
-    # Merge clinical_efficacy (US/EU only) + drug_details (all jurisdictions)
-    # clinical_efficacy uses "United States"/"EU", remap to US/EP
-    ce_mapped: Dict[str, Optional[str]] = {}
-    us_phase = bq_geography.get("United States") or bq_geography.get("US")
-    eu_phase = bq_geography.get("EU") or bq_geography.get("EP")
-    if us_phase:
-        ce_mapped["US"] = us_phase
-    if eu_phase:
-        ce_mapped["EP"] = eu_phase
+    vwd_phases_by_jur = _phases_by_jurisdiction_vwd(vwd_df)
+    vwd_overall = _overall_phase_vwd(vwd_df)
 
-    # Merge: highest phase per jurisdiction wins
-    all_jurisdictions = set(list(ce_mapped.keys()) + list(dd_geography.keys()))
-    merged_geography: Dict[str, Optional[str]] = {}
+    # ── Step 1c: pool both sources per jurisdiction (highest wins) ───────
+    all_jurisdictions = set(clin_phases_by_jur.keys()) | set(vwd_phases_by_jur.keys())
+    bq_geography: Dict[str, Optional[str]] = {}
+    trial_status_by_jur: Dict[str, str] = {}
     for jur in all_jurisdictions:
-        merged_geography[jur] = _highest_phase(
-            ce_mapped.get(jur), dd_geography.get(jur)
+        best_phase, source = _pick_best_phase_multi(
+            clin_phases_by_jur.get(jur, set()), vwd_phases_by_jur.get(jur, set())
         )
+        bq_geography[jur] = best_phase
+        if best_phase and source == "clinical" and jur in clin_status_by_jur:
+            trial_status_by_jur[jur] = clin_status_by_jur[jur]
+        print(f"[TIMELINE] {drug_name} | {jur}: clinical={sorted(clin_phases_by_jur.get(jur, set()))} "
+              f"vwd={sorted(vwd_phases_by_jur.get(jur, set()))} -> {best_phase} (source={source})")
 
-    # Also keep "United States"/"EU" keys for backward compat with _bq_stage_to_timeline
-    if merged_geography.get("US"):
-        merged_geography["United States"] = merged_geography["US"]
-    if merged_geography.get("EP"):
-        merged_geography["EU"] = merged_geography["EP"]
+    # No jurisdiction resolved anything from either source — apply the
+    # overall (location-agnostic) highest phase to US/EP, same fallback
+    # behaviour as before.
+    if not bq_geography:
+        overall_best = _highest_phase(clin_overall, vwd_overall)
+        if overall_best:
+            bq_geography["US"] = overall_best
+            bq_geography["EP"] = overall_best
+            print(f"[TIMELINE] No per-jurisdiction phase found for '{drug_name}' — "
+                  f"applying overall phase '{overall_best}' to US/EP")
 
-    bq_geography = merged_geography
-    print(f"[TIMELINE] Merged phases → {bq_geography}")
+    # Back-compat keys used by _parse_args()/CLI and any older caller.
+    if bq_geography.get("US"):
+        bq_geography["United States"] = bq_geography["US"]
+    if bq_geography.get("EP"):
+        bq_geography["EU"] = bq_geography["EP"]
 
-    # ── Step 2: Fallback Excel ────────────────────────────────────────────────
+    print(f"[TIMELINE] clinical_efficacy + drug_details merged -> {bq_geography}")
+
+    # ── Step 2: Fallback Excel ────────────────────────────────────────────
     fallback_geography: Dict[str, Optional[str]] = {"United States": None, "EU": None}
 
     fallback_df = load_fallback_phase_excel()
@@ -628,79 +705,42 @@ async def fetch_clinical_timeline(
         # lookup_fallback_phase returns {"US": ..., "EP": ...} — remap to canonical keys
         fallback_geography["United States"] = raw.get("US")
         fallback_geography["EU"]            = raw.get("EP")
-        print(f"[TIMELINE] Fallback Excel → {fallback_geography}")
+        print(f"[TIMELINE] Fallback Excel -> {fallback_geography}")
     else:
-        print(f"[TIMELINE] Fallback Excel not available")
+        print("[TIMELINE] Fallback Excel not available")
 
-    # ── Step 3: Merge — highest phase per jurisdiction ────────────────────────
+    # ── Step 3: Merge — highest phase per jurisdiction ────────────────────
     #    Sources (highest wins): BQ (clinical_efficacy + drug_details) > fallback Excel
     merged: Dict[str, Optional[str]] = {}
     for geo in ("United States", "EU"):
         bq_val = (bq_geography.get(geo)
-                  or bq_geography.get("US" if geo == "United States" else "EP")
-                  or bq_geography.get("EU" if geo == "EU" else "United States"))
-        fb_val = (fallback_geography.get(geo)
-                  or fallback_geography.get("US" if geo == "United States" else "EP"))
+                  or bq_geography.get("US" if geo == "United States" else "EP"))
+        fb_val = fallback_geography.get(geo)
         merged[geo] = _highest_phase(bq_val, fb_val)
 
         sources = []
         if bq_val: sources.append(f"BQ={bq_val!r}")
         if fb_val: sources.append(f"Fallback={fb_val!r}")
-        print(
-            f"[TIMELINE MERGE] {geo} → {' | '.join(sources) or 'None available'} "
-            f"→ {merged[geo]!r}"
-        )
+        print(f"[TIMELINE MERGE] {geo} -> {' | '.join(sources) or 'None available'} -> {merged[geo]!r}")
 
-    # Also carry over all other jurisdictions from bq_geography
+    # Carry over every other jurisdiction resolved from BQ (no fallback
+    # Excel coverage beyond US/EU).
     for jur, phase in bq_geography.items():
         if jur not in merged and jur not in ("United States", "EU", "US", "EP"):
             merged[jur] = phase
 
-    # ── Build timeline dict from merged result ────────────────────────────────
+    if merged.get("United States"):
+        merged["US"] = merged["United States"]
+    if merged.get("EU"):
+        merged["EP"] = merged["EU"]
+
     if not any(merged.values()):
         print(f"[TIMELINE] No phase data found from BQ or fallback for '{drug_name}'")
         return empty
 
-    # Map to internal stage names
-    _BQ_STAGE_MAP = {
-        "marketed":         "Marketed",
-        "pre-registration": "Pre-registration",
-        "phase iii":        "Phase 3",
-        "phase ii":         "Phase 2",
-        "phase i":          "Phase 1",
-        "preclinical":      "Preclinical",
-    }
-    _FALLBACK_STAGE_MAP = {
-        "marketed": "Marketed", "pre-registration": "Pre-registration",
-        "preregistration": "Pre-registration",
-        "phase iii": "Phase 3", "phase 3": "Phase 3", "phase3": "Phase 3",
-        "3": "Phase 3", "iii": "Phase 3",
-        "phase ii": "Phase 2", "phase 2": "Phase 2", "phase2": "Phase 2",
-        "2": "Phase 2", "ii": "Phase 2",
-        "phase i": "Phase 1", "phase 1": "Phase 1", "phase1": "Phase 1",
-        "1": "Phase 1", "i": "Phase 1",
-        "preclinical": "Preclinical",
-    }
-
-    normalised: Dict[str, Optional[str]] = {}
-    for geo, stage in merged.items():
-        if stage is None:
-            normalised[geo] = None
-            continue
-        s = stage.lower().strip()
-        # Try BQ map first, then fallback map
-        internal = _BQ_STAGE_MAP.get(s) or _FALLBACK_STAGE_MAP.get(s) or stage
-        if internal not in _TIMELINE_STAGES:
-            internal = stage  # keep as-is if already normalised
-        normalised[geo] = internal
-        print(f"[TIMELINE] {geo}: '{stage}' → '{internal}'")
-
     current_stage = (
-        max(
-            (v for v in normalised.values() if v),
-            key=lambda s: _STAGE_RANK.get(s, 0),
-        )
-        if any(normalised.values()) else "Preclinical"
+        max((v for v in merged.values() if v), key=lambda s: _STAGE_RANK.get(s, 0))
+        if any(merged.values()) else "Preclinical"
     )
     current_idx = _TIMELINE_STAGES.index(current_stage) if current_stage in _TIMELINE_STAGES else 0
 
@@ -708,18 +748,21 @@ async def fetch_clinical_timeline(
              else "bigquery" if any(bq_geography.values()) \
              else "fallback"
 
-    print(f"[TIMELINE] '{drug_name}' → Overall: '{current_stage}' | Per-geo: {normalised} | Source: {source}")
+    print(f"[TIMELINE] '{drug_name}' -> Overall: '{current_stage}' | Per-geo: {merged} | Source: {source}")
 
-    return {
+    result = {
         "current_stage":    current_stage,
         "all_stages":       _TIMELINE_STAGES,
         "completed_stages": _TIMELINE_STAGES[: current_idx + 1],
         "stage_years":      {s: None for s in _TIMELINE_STAGES},
-        "geography_stages": normalised,   # fully merged — United States / EU keys
-        "notes":            f"Stage from {source}. Per-geography: {normalised}",
+        "geography_stages": merged,   # fully merged — includes United States / EU keys
+        "notes":            f"Stage from {source}. Per-geography: {merged}",
         "source":           source,
         "drug_name":        drug_name,
     }
+    if trial_status_by_jur:
+        result["geography_stages"]["_trial_status"] = trial_status_by_jur
+    return result
 
 
 # ─────────────────────────────────────────────
@@ -765,22 +808,10 @@ def lookup_fallback_phase(drug_name: str, df: pd.DataFrame) -> Dict[str, Optiona
         print(f"[PHASE FALLBACK] Found: {list(df.columns)}")
         return result
 
-    print(f"[PHASE FALLBACK] Using columns → Drug='{mol_col}' | Phase='{phase_col}' | Geo='{geo_col}'")
+    print(f"[PHASE FALLBACK] Using columns -> Drug='{mol_col}' | Phase='{phase_col}' | Geo='{geo_col}'")
 
     drug_norm   = _normalize(drug_name)
     drug_simple = drug_name.strip().lower().replace("_", " ")
-
-    _FALLBACK_STAGE_MAP = {
-        "marketed": "Marketed", "pre-registration": "Pre-registration",
-        "preregistration": "Pre-registration",
-        "phase iii": "Phase 3", "phase 3": "Phase 3", "phase3": "Phase 3",
-        "3": "Phase 3", "iii": "Phase 3",
-        "phase ii": "Phase 2", "phase 2": "Phase 2", "phase2": "Phase 2",
-        "2": "Phase 2", "ii": "Phase 2",
-        "phase i": "Phase 1", "phase 1": "Phase 1", "phase1": "Phase 1",
-        "1": "Phase 1", "i": "Phase 1",
-        "preclinical": "Preclinical",
-    }
 
     matched_rows = 0
     for _, row in df.iterrows():
@@ -795,7 +826,7 @@ def lookup_fallback_phase(drug_name: str, df: pd.DataFrame) -> Dict[str, Optiona
         match_type = "normalised" if mol_norm == drug_norm else "simple"
         print(
             f"[PHASE FALLBACK] Matched ({match_type}): "
-            f"Excel='{raw_mol.strip()}' ↔ Pipeline='{drug_name}'"
+            f"Excel='{raw_mol.strip()}' <-> Pipeline='{drug_name}'"
         )
 
         phase = str(row.get(phase_col) or "").strip()
@@ -806,16 +837,16 @@ def lookup_fallback_phase(drug_name: str, df: pd.DataFrame) -> Dict[str, Optiona
         if not geo or geo in ("nan", "none", ""):
             continue
 
-        phase = _FALLBACK_STAGE_MAP.get(phase.strip().lower(), phase)
+        phase = _normalize_phase(phase) or phase
 
         if geo in ("usa", "us", "united states"):
             if result["US"] is None:
                 result["US"] = phase
-                print(f"[PHASE FALLBACK] '{drug_name}' | US → {phase}")
+                print(f"[PHASE FALLBACK] '{drug_name}' | US -> {phase}")
         elif geo in ("eu", "europe", "european union"):
             if result["EP"] is None:
                 result["EP"] = phase
-                print(f"[PHASE FALLBACK] '{drug_name}' | EP → {phase}")
+                print(f"[PHASE FALLBACK] '{drug_name}' | EP -> {phase}")
         else:
             print(f"[PHASE FALLBACK] '{drug_name}' | Ignoring geo: {row.get(geo_col)!r}")
 
@@ -833,50 +864,20 @@ def lookup_fallback_phase(drug_name: str, df: pd.DataFrame) -> Dict[str, Optiona
 
 def _parse_phase_number(phase_str: str) -> Optional[float]:
     """
-    Parses a phase string into a numeric rank for comparison.
-    Handles: 'Phase 1', 'Phase 2', 'Phase 3', '3a', '3b', 'Marketed',
-             'Pre-registration', 'Preclinical', 'I', 'II', 'III', etc.
-    Sub-phases like 3a/3b are treated as 3.
-    Phase 4 is treated as Marketed (5.0).
+    Parses a phase string into a numeric rank for comparison, via
+    _norm_phase() so the same roman-numeral / combined-phase / bare-digit
+    handling applies here too. Sub-phases like 3a/3b are treated as 3.
+    Phase 4 is treated as Marketed.
     Returns None if unparseable.
     """
-    s = str(phase_str).strip().lower()
-    if not s or s in ("nan", "none", ""):
+    norm = _norm_phase(phase_str)
+    if not norm:
         return None
-
-    if s in ("marketed", "launched", "approved"):
-        return 5.0
-    if s in ("pre-registration", "preregistration", "pre registration", "nda/bla", "nda", "bla"):
-        return 4.0
-    if s in ("preclinical", "pre-clinical", "discovery"):
-        return 0.0
-
-    # Roman numeral mapping
-    _roman = {"i": 1, "ii": 2, "iii": 3, "iv": 4}
-
-    # Strip "phase" prefix
-    cleaned = re.sub(r"^phase\s*", "", s).strip()
-
-    # Phase 4 → Marketed
-    if re.match(r"^4", cleaned):
-        return 5.0
-
-    # Try roman numerals (e.g. "III", "IIa")
-    roman_match = re.match(r"^(i{1,3}v?)\s*[a-z]?\s*$", cleaned, re.IGNORECASE)
-    if roman_match:
-        roman = roman_match.group(1).lower()
-        return float(_roman.get(roman, 0))
-
-    # Try numeric (e.g. "3", "3a", "3b", "2/3")
-    num_match = re.match(r"^(\d)", cleaned)
-    if num_match:
-        num = int(num_match.group(1))
-        # Phase 4 → Marketed rank
-        if num >= 4:
-            return 5.0
-        return float(num)
-
-    return None
+    _rank_map = {
+        "preclinical": 0.0, "phase 1": 1.0, "phase 2": 2.0, "phase 3": 3.0,
+        "phase 4": 5.0, "pre-registration": 4.0, "approved/marketed": 5.0,
+    }
+    return _rank_map.get(norm)
 
 
 def _phase_number_to_label(num: float) -> str:
@@ -933,23 +934,9 @@ def _build_phase_year_lookup(
         print(f"[PHASE YEAR] Found: {list(df.columns)}")
         return {"US": {}, "EP": {}}
 
-    print(f"[PHASE YEAR] Using columns → Drug='{mol_col}' | Phase='{phase_col}' | Year='{year_col}' | Country='{country_col}'")
+    print(f"[PHASE YEAR] Using columns -> Drug='{mol_col}' | Phase='{phase_col}' | Year='{year_col}' | Country='{country_col}'")
 
     drug_norm = _normalize(drug_name)
-
-    _US_COUNTRIES = {
-        "usa", "us", "united states", "united states of america",
-    }
-    _EP_COUNTRIES = {
-        "eu", "europe", "european union",
-        # Common EU member states that may appear
-        "germany", "france", "italy", "spain", "netherlands", "belgium",
-        "austria", "sweden", "denmark", "finland", "ireland", "portugal",
-        "greece", "poland", "czech republic", "hungary", "romania",
-        "bulgaria", "croatia", "slovakia", "slovenia", "estonia",
-        "latvia", "lithuania", "luxembourg", "malta", "cyprus",
-        "uk", "united kingdom", "great britain", "switzerland", "norway",
-    }
 
     matched = 0
     for _, row in df.iterrows():
@@ -974,22 +961,16 @@ def _build_phase_year_lookup(
             print(f"[PHASE YEAR]   Skipping unparseable year: '{year_raw}'")
             continue
 
-        # Parse countries (comma-separated)
-        countries = [c.strip().lower() for c in re.split(r"[,;/]", country_raw) if c.strip()]
-
-        jurisdictions_hit = set()
-        for c in countries:
-            if c in _US_COUNTRIES:
-                jurisdictions_hit.add("US")
-            if c in _EP_COUNTRIES:
-                jurisdictions_hit.add("EP")
+        # Parse countries (comma-separated) via the same jurisdiction
+        # token mapping used everywhere else, restricted to US/EP here.
+        jurisdictions_hit = {t for t in _split_tokens(country_raw) if t in ("US", "EP")}
 
         for jur in jurisdictions_hit:
             existing = result[jur].get(year, -1.0)
             if phase_num > existing:
                 result[jur][year] = phase_num
                 print(
-                    f"[PHASE YEAR]   {drug_name} | {jur} | {year} → "
+                    f"[PHASE YEAR]   {drug_name} | {jur} | {year} -> "
                     f"Phase {phase_str} (rank {phase_num})"
                     + (f" [upgraded from {existing}]" if existing >= 0 else "")
                 )
@@ -1005,7 +986,7 @@ def _build_phase_year_lookup(
         for yr, num in sorted(result[jur].items()):
             label_result[jur][yr] = _phase_number_to_label(num)
         if label_result[jur]:
-            print(f"[PHASE YEAR] {drug_name} | {jur} year→phase map: {label_result[jur]}")
+            print(f"[PHASE YEAR] {drug_name} | {jur} year->phase map: {label_result[jur]}")
 
     return label_result
 
@@ -1076,11 +1057,6 @@ def assign_patent_phases(patents: List[Dict], timeline: Dict) -> List[Dict]:
     fallback_stages: Dict[str, Optional[str]] = {}
     fallback_trial_status: Dict[str, str] = {}
     _trial_status_map = geography_stages.pop("_trial_status", {})
-    if isinstance(_trial_status_map, dict):
-        for geo_key, ts in _trial_status_map.items():
-            jur = _JUR_ALIASES.get(geo_key.lower().strip(), geo_key.upper().strip())
-            fallback_trial_status[jur] = ts
-
     _JUR_ALIASES = {
         "united states": "US", "us": "US", "usa": "US",
         "eu": "EP", "europe": "EP", "european union": "EP", "ep": "EP",
@@ -1094,12 +1070,20 @@ def assign_patent_phases(patents: List[Dict], timeline: Dict) -> List[Dict]:
         "mexico": "MX", "mx": "MX",
         "taiwan": "TW", "tw": "TW",
         "russia": "RU", "ru": "RU",
+        "poland": "PL", "pl": "PL",
+        "netherlands": "NL", "nl": "NL",
+        "spain": "ES", "es": "ES",
     }
+    if isinstance(_trial_status_map, dict):
+        for geo_key, ts in _trial_status_map.items():
+            jur = _JUR_ALIASES.get(geo_key.lower().strip(), geo_key.upper().strip())
+            fallback_trial_status[jur] = ts
+
     for geo_key, phase in geography_stages.items():
         jur = _JUR_ALIASES.get(geo_key.lower().strip(), geo_key.upper().strip())
         fallback_stages[jur] = _highest_phase(fallback_stages.get(jur), phase)
 
-    print(f"[PHASE] Per-jurisdiction fallback → {fallback_stages}")
+    print(f"[PHASE] Per-jurisdiction fallback -> {fallback_stages}")
 
     # ── Build year-based phase lookup from fallback Excel ─────────────────
     phase_year_map: Dict[str, Dict[int, str]] = {"US": {}, "EP": {}}
@@ -1148,7 +1132,7 @@ def assign_patent_phases(patents: List[Dict], timeline: Dict) -> List[Dict]:
             if stage:
                 print(
                     f"[PHASE] {patent.get('patent_number')} | {jurisdiction} | "
-                    f"Filed {filing_year} → {stage} (year-based)"
+                    f"Filed {filing_year} -> {stage} (year-based)"
                 )
 
         # Fallback to per-jurisdiction phase if year-based returned nothing
@@ -1161,7 +1145,7 @@ def assign_patent_phases(patents: List[Dict], timeline: Dict) -> List[Dict]:
                 reason = "no filing year" if not filing_year else "no year-based data for this year"
                 print(
                     f"[PHASE] {patent.get('patent_number')} | {jurisdiction} | "
-                    f"→ {stage} (jurisdiction fallback — {reason})"
+                    f"-> {stage} (jurisdiction fallback — {reason})"
                 )
             else:
                 print(
@@ -1180,7 +1164,7 @@ def assign_patent_phases(patents: List[Dict], timeline: Dict) -> List[Dict]:
             any_assigned = True
 
         if not stage:
-            print(f"[PHASE] {patent.get('patent_number')} | {jurisdiction} → None")
+            print(f"[PHASE] {patent.get('patent_number')} | {jurisdiction} -> None")
 
     if not any_assigned:
         print(f"[PHASE] No phase data available — phase_at_filing = None for all patents")

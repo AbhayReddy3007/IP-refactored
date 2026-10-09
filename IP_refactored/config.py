@@ -31,7 +31,7 @@ DIM_SCORES_TABLE = os.getenv("DIM_SCORES_TABLE", "dimension_scores")
 # ─────────────────────────────────────────────
 
 # Single canonical bucket used for everything (reports, caches, patents).
-GCS_BUCKET = os.getenv("GCS_BUCKET") or os.getenv("GCS_BUCKET_NAME", "")
+GCS_BUCKET = os.getenv("GCS_BUCKET") or os.getenv("GCS_BUCKET_NAME", "cognito-gcs")
 
 GCS_REPORT_BASE_PATH            = os.getenv("GCS_REPORT_BASE_PATH", "reports")
 GCS_MEDICAL_POTENTIAL_SUBFOLDER = os.getenv("GCS_MEDICAL_POTENTIAL_SUBFOLDER", "medical_potential")
@@ -42,7 +42,7 @@ GCS_PIPELINE_CACHE_BASE_PATH    = os.getenv("GCS_PIPELINE_CACHE_BASE_PATH", "pip
 GCS_CACHE_PREFIX = os.getenv("GCS_CACHE_PREFIX", GCS_PIPELINE_CACHE_BASE_PATH)
 
 # Patent PDFs live under gs://{GCS_BUCKET}/{GCS_PATENTS_PREFIX}/{drug_name}/*.pdf
-GCS_PATENTS_PREFIX = os.getenv("GCS_PATENTS_PREFIX", "patents")
+GCS_PATENTS_PREFIX = os.getenv("GCS_PATENTS_PREFIX", "Cognito_new/Master_patent_list")
 
 # Subfolder (within GCS_CACHE_PREFIX) where indexer progress/resume markers live
 GCS_INDEXER_PROGRESS_SUBFOLDER = os.getenv("GCS_INDEXER_PROGRESS_SUBFOLDER", "indexer_progress")
@@ -120,8 +120,23 @@ NCBI_API_KEY   = os.getenv("NCBI_API_KEY", "")
 # Primary market entry horizon — phase fetching (phase_fetcher.py)
 # ─────────────────────────────────────────────
 
-CLINICAL_EFFICACY_TABLE = os.getenv("CLINICAL_EFFICACY_TABLE", "clinical_efficacy")
-DRUG_DETAILS_TABLE      = os.getenv("DRUG_DETAILS_TABLE", "vw_drug_details")
+# Fully-qualified (project.dataset.table) BigQuery table for clinical-trial
+# phase data. Lives in a separate GCP project from everything else
+# (cognito-dev-380506.data_mart), so it's given fully-qualified rather than
+# combined with BQ_PROJECT_ID/BQ_DATASET_ID. phase_fetcher.py detects a
+# fully-qualified value (2 dots) and uses it as-is; a bare table name is
+# still combined with BQ_PROJECT_ID/BQ_DATASET_ID for backward compatibility.
+CLINICAL_EFFICACY_TABLE = os.getenv("CLINICAL_EFFICACY_TABLE", "cognito-dev-380506.data_mart.clinical_efficacy_glp1")
+
+# Secondary phase source ("the drug list table") — the same BigQuery view
+# chunking/drug_list.py resolves the GLP-1 drug list from (DRUG_LIST_VIEW).
+# Bare table/view name: phase_fetcher.py looks it up in the SAME
+# project/dataset as CLINICAL_EFFICACY_TABLE above (cognito-dev-380506.data_mart)
+# whenever that table is fully-qualified, since this view lives alongside it.
+# (DRUG_LIST_VIEW itself is defined further down this file, as
+# "vw_drug_details_full" — kept as a literal default here since it's used
+# before that point in the file.)
+DRUG_DETAILS_TABLE = os.getenv("DRUG_DETAILS_TABLE", "vw_drug_details_full")
 
 # Local Excel bundled in the image as a fallback when BigQuery phase data is
 # missing for a drug/jurisdiction. Defaults to a file living next to this
