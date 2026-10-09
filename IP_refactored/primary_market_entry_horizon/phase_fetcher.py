@@ -381,7 +381,10 @@ def import_from_gbq(
     """
     Fetches raw clinical phase rows for `drug_name` from the
     clinical_efficacy table: molecule_name, trial_location, phase,
-    phase_status/trial_status. No phase bucketing happens in SQL — phase
+    phase_status (the reference script's status_col — NOT "trial_status",
+    which was the old clinical_efficacy table's column name; the new
+    clinical_efficacy_glp1 table uses phase_status). No phase bucketing
+    happens in SQL — phase
     normalisation and jurisdiction splitting are done in Python via
     _norm_phase() / _location_tokens(), same as the reference script, so
     the exact same string forms (roman numerals, combined "2/3" phases,
@@ -396,7 +399,7 @@ def import_from_gbq(
             molecule_name,
             trial_location,
             phase,
-            trial_status
+            phase_status
         FROM `{fq_table}`
         WHERE LOWER(REGEXP_REPLACE(COALESCE(molecule_name, ''), r'[\\s\\-_]+', ''))
               = LOWER(REGEXP_REPLACE(@drug_name, r'[\\s\\-_]+', ''))
@@ -422,7 +425,7 @@ def import_from_gbq(
 def _phases_by_jurisdiction_clinical(df: pd.DataFrame) -> Tuple[Dict[str, Set[str]], Dict[str, str]]:
     """From raw clinical_efficacy rows (already filtered to one drug),
     build {jurisdiction_token: {normalised_phase, ...}} plus a best
-    trial_status per jurisdiction (first non-blank one seen for that
+    phase_status per jurisdiction (first non-blank one seen for that
     jurisdiction's winning phase, informational only)."""
     phases_by_jur: Dict[str, Set[str]] = {}
     status_by_jur: Dict[str, str] = {}
@@ -433,7 +436,7 @@ def _phases_by_jurisdiction_clinical(df: pd.DataFrame) -> Tuple[Dict[str, Set[st
         phase_label = _normalize_phase(row.get("phase"))
         if phase_label is None:
             continue
-        status = str(row.get("trial_status") or "").strip()
+        status = str(row.get("phase_status") or "").strip()
         tokens = _location_tokens(row.get("trial_location"))
         if not tokens:
             continue  # unknown/blank location — contributes to overall fallback separately

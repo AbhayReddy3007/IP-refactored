@@ -116,7 +116,7 @@ async def check_drug(drug_name: str) -> None:
             print(f"      molecule_name={row.get('molecule_name')!r}  "
                   f"trial_location={row.get('trial_location')!r} -> tokens={sorted(tokens) or '(none)'}  "
                   f"phase={row.get('phase')!r} -> normalised={norm_phase!r}  "
-                  f"trial_status={row.get('trial_status')!r}")
+                  f"phase_status={row.get('phase_status')!r}")
 
     clin_phases_by_jur, clin_status_by_jur = pf._phases_by_jurisdiction_clinical(
         clinical_df if clinical_df is not None else __import__("pandas").DataFrame()
