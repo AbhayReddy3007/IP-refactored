@@ -11,7 +11,8 @@ the market (years_to_entry), and the corresponding 1-5 scores.
 
 Also packages the supporting modules that feed / consume the score
 calculation (ported from cog/):
-    phase_fetcher.py         — supplies phase_at_filing (BigQuery + Excel fallback)
+    phase_fetcher.py         — supplies phase_at_filing (BigQuery only: clinical_efficacy
+                               + the drug-list/drug_details view — no local Excel fallback)
     approval_date_fetcher.py — supplies real-world approval_date_us / approval_date_eu
     excel_exporter.py        — writes the final scored patents to Excel in GCS
 (the original callers — tools.py's two-pass orchestration, and agent.py,
