@@ -84,6 +84,12 @@ OVERLAP_CHARS    = int(os.getenv("OVERLAP_CHARS", "400"))
 # Max concurrent patents processed in parallel per drug
 INDEXER_CONCURRENCY = int(os.getenv("INDEXER_CONCURRENCY", "10"))
 
+# How often (seconds) the indexer logs a heartbeat — a snapshot of which
+# patents are currently in flight and how long each has been running, so a
+# long run never goes silent even while every patent is still mid-step
+# (e.g. waiting on a slow Gemini call).
+INDEXER_HEARTBEAT_SECONDS = int(os.getenv("INDEXER_HEARTBEAT_SECONDS", "30"))
+
 # Cover-page render DPI for Gemini Vision date extraction
 COVER_PAGE_DPI = int(os.getenv("COVER_PAGE_DPI", "300"))
 
@@ -138,10 +144,8 @@ CLINICAL_EFFICACY_TABLE = os.getenv("CLINICAL_EFFICACY_TABLE", "cognito-dev-3805
 # before that point in the file.)
 DRUG_DETAILS_TABLE = os.getenv("DRUG_DETAILS_TABLE", "vw_drug_details_full")
 
-# Local Excel bundled in the image as a fallback when BigQuery phase data is
-# missing for a drug/jurisdiction. Defaults to a file living next to this
-# module in primary_market_entry_horizon/.
-PHASE_FALLBACK_EXCEL = os.getenv("PHASE_FALLBACK_EXCEL", "")
+# (No local Excel fallback for phase data — phase_fetcher.py sources every
+# phase from BigQuery, clinical_efficacy + DRUG_DETAILS_TABLE, only.)
 
 # ─────────────────────────────────────────────
 # Primary market entry horizon — approval date fetching (approval_date_fetcher.py)
