@@ -6,11 +6,12 @@ Handles:
   - Fetching clinical development stage from BigQuery (drug-details/"drug
     list" table — the same view chunking/drug_list.py resolves the GLP-1
     drug list from)
-  - Loading fallback phase data from a local Excel sheet
-  - Merging clinical_efficacy + drug_details + fallback stages per
-    jurisdiction (US / EP / JP / CN / KR / IN / AU / CA / BR / MX / TW / RU /
-    PL / NL / ES)
+  - Merging clinical_efficacy + drug_details stages per jurisdiction
+    (US / EP / JP / CN / KR / IN / AU / CA / BR / MX / TW / RU / PL / NL / ES)
   - Assigning phase_at_filing to each patent dict
+
+No local Excel fallback — every phase comes from BigQuery
+(clinical_efficacy + the drug-list/drug_details view) only.
 
 Phase normalisation and jurisdiction/geography matching (roman numerals,
 combined phases like "2/3", country-name <-> country-code aliases, the
@@ -24,7 +25,6 @@ _vwd_geo_tokens() / _vwd_geo_tokens_combined() / _pick_best_phase_multi().
 import asyncio
 import os
 import re
-from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 import pandas as pd
@@ -43,12 +43,6 @@ BQ_DATASET_ID         = config.BQ_DATASET_ID
 BQ_TABLE_NAME         = config.CLINICAL_EFFICACY_TABLE
 BQ_DRUG_DETAILS_TABLE = config.DRUG_DETAILS_TABLE
 BQ_SERVICE_ACCOUNT    = config.GOOGLE_APPLICATION_CREDENTIALS
-
-# Local Excel fallback. If config.PHASE_FALLBACK_EXCEL is unset, falls back
-# to a file living next to this module in the container image.
-PHASE_FALLBACK_EXCEL = Path(
-    config.PHASE_FALLBACK_EXCEL or (Path(__file__).parent / "phase_fallback.xlsx")
-)
 
 _TIMELINE_STAGES = [
     "Preclinical", "Phase 1", "Phase 2", "Phase 3", "Pre-registration", "Marketed"
@@ -590,11 +584,11 @@ async def fetch_clinical_timeline(
 ) -> Dict:
     """
     Queries BigQuery (clinical_efficacy + the drug-list/drug_details view)
-    for clinical stage data, pools both sources per jurisdiction (highest
+    for clinical stage data and pools both sources per jurisdiction (highest
     priority phase wins, same rule as the reference script's
-    _pick_best_phase_multi), then merges in the fallback Excel, so
-    geography_stages reflects the single best phase per jurisdiction from
-    all three sources.
+    _pick_best_phase_multi), so geography_stages reflects the single best
+    phase per jurisdiction across both BigQuery sources. No local Excel
+    fallback is used.
 
     Returns:
         Timeline dict with keys: current_stage, geography_stages, source, drug_name, …
@@ -699,46 +693,11 @@ async def fetch_clinical_timeline(
 
     print(f"[TIMELINE] clinical_efficacy + drug_details merged -> {bq_geography}")
 
-    # ── Step 2: Fallback Excel ────────────────────────────────────────────
-    fallback_geography: Dict[str, Optional[str]] = {"United States": None, "EU": None}
-
-    fallback_df = load_fallback_phase_excel()
-    if fallback_df is not None:
-        raw = lookup_fallback_phase(drug_name, fallback_df)
-        # lookup_fallback_phase returns {"US": ..., "EP": ...} — remap to canonical keys
-        fallback_geography["United States"] = raw.get("US")
-        fallback_geography["EU"]            = raw.get("EP")
-        print(f"[TIMELINE] Fallback Excel -> {fallback_geography}")
-    else:
-        print("[TIMELINE] Fallback Excel not available")
-
-    # ── Step 3: Merge — highest phase per jurisdiction ────────────────────
-    #    Sources (highest wins): BQ (clinical_efficacy + drug_details) > fallback Excel
-    merged: Dict[str, Optional[str]] = {}
-    for geo in ("United States", "EU"):
-        bq_val = (bq_geography.get(geo)
-                  or bq_geography.get("US" if geo == "United States" else "EP"))
-        fb_val = fallback_geography.get(geo)
-        merged[geo] = _highest_phase(bq_val, fb_val)
-
-        sources = []
-        if bq_val: sources.append(f"BQ={bq_val!r}")
-        if fb_val: sources.append(f"Fallback={fb_val!r}")
-        print(f"[TIMELINE MERGE] {geo} -> {' | '.join(sources) or 'None available'} -> {merged[geo]!r}")
-
-    # Carry over every other jurisdiction resolved from BQ (no fallback
-    # Excel coverage beyond US/EU).
-    for jur, phase in bq_geography.items():
-        if jur not in merged and jur not in ("United States", "EU", "US", "EP"):
-            merged[jur] = phase
-
-    if merged.get("United States"):
-        merged["US"] = merged["United States"]
-    if merged.get("EU"):
-        merged["EP"] = merged["EU"]
+    # ── Final result — BigQuery only, no fallback Excel merge ────────────
+    merged: Dict[str, Optional[str]] = dict(bq_geography)
 
     if not any(merged.values()):
-        print(f"[TIMELINE] No phase data found from BQ or fallback for '{drug_name}'")
+        print(f"[TIMELINE] No phase data found from BigQuery for '{drug_name}'")
         return empty
 
     current_stage = (
@@ -747,9 +706,7 @@ async def fetch_clinical_timeline(
     )
     current_idx = _TIMELINE_STAGES.index(current_stage) if current_stage in _TIMELINE_STAGES else 0
 
-    source = "bigquery+fallback" if any(bq_geography.values()) and any(fallback_geography.values()) \
-             else "bigquery" if any(bq_geography.values()) \
-             else "fallback"
+    source = "bigquery"
 
     print(f"[TIMELINE] '{drug_name}' -> Overall: '{current_stage}' | Per-geo: {merged} | Source: {source}")
 
@@ -768,277 +725,13 @@ async def fetch_clinical_timeline(
     return result
 
 
-# ─────────────────────────────────────────────
-# Fallback Excel
-# ─────────────────────────────────────────────
-
-def load_fallback_phase_excel() -> Optional[pd.DataFrame]:
-    if not PHASE_FALLBACK_EXCEL.exists():
-        print(f"[PHASE FALLBACK] File not found: {PHASE_FALLBACK_EXCEL}")
-        return None
-    try:
-        df = pd.read_excel(PHASE_FALLBACK_EXCEL)
-        df.columns = [c.strip() for c in df.columns]
-        print(f"[PHASE FALLBACK] Loaded {len(df)} rows from {PHASE_FALLBACK_EXCEL.name}")
-        print(f"[PHASE FALLBACK] Columns: {list(df.columns)}")
-        return df
-    except Exception as e:
-        print(f"[PHASE FALLBACK] Failed to load: {e}")
-        return None
-
-
-def lookup_fallback_phase(drug_name: str, df: pd.DataFrame) -> Dict[str, Optional[str]]:
-    """
-    Looks up US/EP phase from the fallback Excel sheet.
-
-    Expected columns: Drug / Molecule, Phase, Primary Country 1 (USA or EU).
-
-    Returns:
-        {"US": phase_or_None, "EP": phase_or_None}
-    """
-    result  = {"US": None, "EP": None}
-    col_map = {c.strip().lower(): c for c in df.columns}
-
-    mol_col      = next((col_map[k] for k in col_map if k in ("drug", "molecule", "drug name")), None)
-    phase_col    = next((col_map[k] for k in col_map if k == "phase"), None)
-    country1_col = next((col_map[k] for k in col_map if k == "primary country 1"), None)
-    country_col  = next((col_map[k] for k in col_map if k == "primary country"), None)
-    geo_col      = country1_col or country_col
-
-    if not mol_col or not phase_col or not geo_col:
-        print(f"[PHASE FALLBACK] Missing required columns.")
-        print(f"[PHASE FALLBACK] Need: Drug/Molecule, Phase, Primary Country 1 (or Primary Country)")
-        print(f"[PHASE FALLBACK] Found: {list(df.columns)}")
-        return result
-
-    print(f"[PHASE FALLBACK] Using columns -> Drug='{mol_col}' | Phase='{phase_col}' | Geo='{geo_col}'")
-
-    drug_norm   = _normalize(drug_name)
-    drug_simple = drug_name.strip().lower().replace("_", " ")
-
-    matched_rows = 0
-    for _, row in df.iterrows():
-        raw_mol    = str(row.get(mol_col) or "")
-        mol_norm   = _normalize(raw_mol)
-        mol_simple = raw_mol.strip().lower().replace("_", " ")
-
-        if mol_norm != drug_norm and mol_simple != drug_simple:
-            continue
-
-        matched_rows += 1
-        match_type = "normalised" if mol_norm == drug_norm else "simple"
-        print(
-            f"[PHASE FALLBACK] Matched ({match_type}): "
-            f"Excel='{raw_mol.strip()}' <-> Pipeline='{drug_name}'"
-        )
-
-        phase = str(row.get(phase_col) or "").strip()
-        geo   = str(row.get(geo_col)   or "").strip().lower()
-
-        if not phase or phase.lower() in ("nan", "none", ""):
-            continue
-        if not geo or geo in ("nan", "none", ""):
-            continue
-
-        phase = _normalize_phase(phase) or phase
-
-        if geo in ("usa", "us", "united states"):
-            if result["US"] is None:
-                result["US"] = phase
-                print(f"[PHASE FALLBACK] '{drug_name}' | US -> {phase}")
-        elif geo in ("eu", "europe", "european union"):
-            if result["EP"] is None:
-                result["EP"] = phase
-                print(f"[PHASE FALLBACK] '{drug_name}' | EP -> {phase}")
-        else:
-            print(f"[PHASE FALLBACK] '{drug_name}' | Ignoring geo: {row.get(geo_col)!r}")
-
-    if matched_rows == 0:
-        print(f"[PHASE FALLBACK] NO MATCH for '{drug_name}'")
-        all_names = df[mol_col].dropna().str.strip().unique().tolist()
-        print(f"[PHASE FALLBACK] All drug names in sheet: {all_names}")
-
-    return result
-
-
-# ─────────────────────────────────────────────
-# Phase assignment (year-based from fallback Excel)
-# ─────────────────────────────────────────────
-
-def _parse_phase_number(phase_str: str) -> Optional[float]:
-    """
-    Parses a phase string into a numeric rank for comparison, via
-    _norm_phase() so the same roman-numeral / combined-phase / bare-digit
-    handling applies here too. Sub-phases like 3a/3b are treated as 3.
-    Phase 4 is treated as Marketed.
-    Returns None if unparseable.
-    """
-    norm = _norm_phase(phase_str)
-    if not norm:
-        return None
-    _rank_map = {
-        "preclinical": 0.0, "phase 1": 1.0, "phase 2": 2.0, "phase 3": 3.0,
-        "phase 4": 5.0, "pre-registration": 4.0, "approved/marketed": 5.0,
-    }
-    return _rank_map.get(norm)
-
-
-def _phase_number_to_label(num: float) -> str:
-    """Converts a numeric phase rank back to a display label."""
-    _map = {
-        0.0: "Preclinical",
-        1.0: "Phase 1",
-        2.0: "Phase 2",
-        3.0: "Phase 3",
-        4.0: "Pre-registration",
-        5.0: "Marketed",
-    }
-    return _map.get(num, f"Phase {int(num)}")
-
-
-def _build_phase_year_lookup(
-    drug_name: str,
-    df: pd.DataFrame,
-) -> Dict[str, Dict[int, str]]:
-    """
-    Builds a lookup: {jurisdiction: {year: highest_phase_label}} from the
-    fallback Excel that has columns: Drug, Phase, Primary Country, Start Year.
-
-    Primary Country may contain multiple countries comma-separated (e.g. "USA,EU,Canada").
-    Jurisdiction mapping:
-        USA / US / United States  → US
-        EU / Europe / European Union / any EU country name  → EP
-
-    Phase sub-phases (3a, 3b) are treated as their base phase (3).
-    Phase 4 is treated as Marketed.
-    For each jurisdiction + year, only the highest phase is kept.
-
-    Returns:
-        {"US": {2015: "Phase 2", 2018: "Phase 3", ...},
-         "EP": {2016: "Phase 1", ...}}
-    """
-    result: Dict[str, Dict[int, float]] = {"US": {}, "EP": {}}
-
-    col_map = {c.strip().lower(): c for c in df.columns}
-
-    mol_col   = next((col_map[k] for k in col_map if k in ("drug", "molecule", "drug name")), None)
-    phase_col = next((col_map[k] for k in col_map if k == "phase"), None)
-    year_col  = next((col_map[k] for k in col_map if k in ("start year", "startyear", "year")), None)
-
-    # Support both "Primary Country" and "Primary Country 1"
-    country_col = next(
-        (col_map[k] for k in col_map if k in ("primary country", "primary country 1", "country")),
-        None,
-    )
-
-    if not all([mol_col, phase_col, year_col, country_col]):
-        print(f"[PHASE YEAR] Missing required columns for year-based lookup.")
-        print(f"[PHASE YEAR] Need: Drug, Phase, Start Year, Primary Country")
-        print(f"[PHASE YEAR] Found: {list(df.columns)}")
-        return {"US": {}, "EP": {}}
-
-    print(f"[PHASE YEAR] Using columns -> Drug='{mol_col}' | Phase='{phase_col}' | Year='{year_col}' | Country='{country_col}'")
-
-    drug_norm = _normalize(drug_name)
-
-    matched = 0
-    for _, row in df.iterrows():
-        raw_mol = str(row.get(mol_col) or "").strip()
-        if _normalize(raw_mol) != drug_norm and raw_mol.strip().lower() != drug_name.strip().lower():
-            continue
-
-        matched += 1
-        phase_str = str(row.get(phase_col) or "").strip()
-        year_raw  = row.get(year_col)
-        country_raw = str(row.get(country_col) or "").strip()
-
-        phase_num = _parse_phase_number(phase_str)
-        if phase_num is None:
-            print(f"[PHASE YEAR]   Skipping unparseable phase: '{phase_str}'")
-            continue
-
-        # Parse year
-        try:
-            year = int(float(year_raw))
-        except (ValueError, TypeError):
-            print(f"[PHASE YEAR]   Skipping unparseable year: '{year_raw}'")
-            continue
-
-        # Parse countries (comma-separated) via the same jurisdiction
-        # token mapping used everywhere else, restricted to US/EP here.
-        jurisdictions_hit = {t for t in _split_tokens(country_raw) if t in ("US", "EP")}
-
-        for jur in jurisdictions_hit:
-            existing = result[jur].get(year, -1.0)
-            if phase_num > existing:
-                result[jur][year] = phase_num
-                print(
-                    f"[PHASE YEAR]   {drug_name} | {jur} | {year} -> "
-                    f"Phase {phase_str} (rank {phase_num})"
-                    + (f" [upgraded from {existing}]" if existing >= 0 else "")
-                )
-
-    if matched == 0:
-        print(f"[PHASE YEAR] NO MATCH for '{drug_name}' in fallback Excel")
-        all_names = df[mol_col].dropna().str.strip().unique().tolist()
-        print(f"[PHASE YEAR] Available drugs: {all_names}")
-
-    # Convert numeric ranks to labels
-    label_result: Dict[str, Dict[int, str]] = {"US": {}, "EP": {}}
-    for jur in ("US", "EP"):
-        for yr, num in sorted(result[jur].items()):
-            label_result[jur][yr] = _phase_number_to_label(num)
-        if label_result[jur]:
-            print(f"[PHASE YEAR] {drug_name} | {jur} year->phase map: {label_result[jur]}")
-
-    return label_result
-
-
-def _lookup_phase_for_year(
-    phase_year_map: Dict[str, Dict[int, str]],
-    jurisdiction: str,
-    filing_year: int,
-) -> Optional[str]:
-    """
-    Looks up the phase for a given jurisdiction and filing year.
-
-    Logic: find the highest phase from all entries where Start Year <= filing_year.
-    This represents the most advanced phase the drug had reached by that year.
-    """
-    jur_map = phase_year_map.get(jurisdiction, {})
-    if not jur_map:
-        return None
-
-    # Collect all phases for years up to and including the filing year
-    applicable = {yr: phase for yr, phase in jur_map.items() if yr <= filing_year}
-
-    if not applicable:
-        return None
-
-    # Return the highest phase among all applicable years
-    best_phase = None
-    best_rank  = -1.0
-    for yr, phase in applicable.items():
-        rank = _parse_phase_number(phase)
-        if rank is not None and rank > best_rank:
-            best_rank  = rank
-            best_phase = phase
-
-    return best_phase
-
-
 def assign_patent_phases(patents: List[Dict], timeline: Dict) -> List[Dict]:
     """
     Assigns phase_at_filing to each patent based on:
-      1. The patent's filing year (from filing_date)
-      2. The patent's jurisdiction (US / EP)
-      3. The fallback Excel's year-based phase data
-
-    For each patent, looks up the highest phase the drug had reached
-    in that jurisdiction by the patent's filing year.
-
-    Falls back to the overall geography_stages (from BQ + fallback merge)
-    if year-based lookup is unavailable or returns no match.
+      1. The patent's jurisdiction (US / EP / ...)
+      2. The overall geography_stages resolved by fetch_clinical_timeline()
+         (BigQuery clinical_efficacy + drug_details only — no local Excel
+         fallback, no year-based lookup).
 
     Args:
         patents:  List of patent dicts (from blocking_analyser)
@@ -1088,21 +781,8 @@ def assign_patent_phases(patents: List[Dict], timeline: Dict) -> List[Dict]:
 
     print(f"[PHASE] Per-jurisdiction fallback -> {fallback_stages}")
 
-    # ── Build year-based phase lookup from fallback Excel ─────────────────
-    phase_year_map: Dict[str, Dict[int, str]] = {"US": {}, "EP": {}}
-    fallback_df = load_fallback_phase_excel()
-    if fallback_df is not None:
-        phase_year_map = _build_phase_year_lookup(drug_name, fallback_df)
-    else:
-        print(f"[PHASE] Fallback Excel not available — using overall phase only")
-
-    has_year_data = any(phase_year_map[j] for j in ("US", "EP"))
-    if has_year_data:
-        print(f"[PHASE] Year-based phase data available — will match by filing year")
-    else:
-        print(f"[PHASE] No year-based data — falling back to overall phase for all patents")
-
-    # ── Assign to each patent ──
+    # ── Assign to each patent — jurisdiction lookup only (no year-based
+    #    Excel lookup) ──────────────────────────────────────────────────
     any_assigned = False
     for patent in patents:
         if patent.get("tag") == "SKIPPED":
@@ -1110,64 +790,18 @@ def assign_patent_phases(patents: List[Dict], timeline: Dict) -> List[Dict]:
             continue
 
         jurisdiction = (patent.get("jurisdiction") or "").upper()
-        filing_date  = patent.get("filing_date")
 
-        # Try to extract filing year
-        filing_year = None
-        if filing_date:
-            try:
-                filing_year = int(str(filing_date)[:4])
-            except (ValueError, TypeError):
-                pass
-
-        stage = None
-
-        # Year-based lookup (preferred)
-        if filing_year and has_year_data:
-            if jurisdiction in ("US", "EP"):
-                stage = _lookup_phase_for_year(phase_year_map, jurisdiction, filing_year)
-            else:
-                # Unknown jurisdiction — try both, take highest
-                us_phase = _lookup_phase_for_year(phase_year_map, "US", filing_year)
-                ep_phase = _lookup_phase_for_year(phase_year_map, "EP", filing_year)
-                stage = _highest_phase(us_phase, ep_phase)
-
-            if stage:
-                print(
-                    f"[PHASE] {patent.get('patent_number')} | {jurisdiction} | "
-                    f"Filed {filing_year} -> {stage} (year-based)"
-                )
-
-        # Fallback to per-jurisdiction phase if year-based returned nothing
-        if not stage:
-            # Look up this patent's jurisdiction directly
-            stage = fallback_stages.get(jurisdiction)
-
-            # If not found for this jurisdiction, leave as None (phase not available)
-            if stage:
-                reason = "no filing year" if not filing_year else "no year-based data for this year"
-                print(
-                    f"[PHASE] {patent.get('patent_number')} | {jurisdiction} | "
-                    f"-> {stage} (jurisdiction fallback — {reason})"
-                )
-            else:
-                print(
-                    f"[PHASE] {patent.get('patent_number')} | {jurisdiction} | "
-                    f"Phase not available for this jurisdiction"
-                )
-
-        # Final merge: ensure BQ-sourced phase (drug_details) wins if higher
-        jur_fallback = fallback_stages.get(jurisdiction)
-        if jur_fallback:
-            stage = _highest_phase(stage, jur_fallback)
+        stage = fallback_stages.get(jurisdiction)
+        if stage:
+            print(f"[PHASE] {patent.get('patent_number')} | {jurisdiction} -> {stage}")
+        else:
+            print(f"[PHASE] {patent.get('patent_number')} | {jurisdiction} | "
+                  f"Phase not available for this jurisdiction")
 
         patent["phase_at_filing"] = stage
         patent["trial_status"] = fallback_trial_status.get(jurisdiction, "")
         if stage:
             any_assigned = True
-
-        if not stage:
-            print(f"[PHASE] {patent.get('patent_number')} | {jurisdiction} -> None")
 
     if not any_assigned:
         print(f"[PHASE] No phase data available — phase_at_filing = None for all patents")
