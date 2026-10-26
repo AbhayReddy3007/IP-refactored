@@ -34,28 +34,22 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from google.genai import types
 
 from .. import config
 from .. import gcp_utils
 from .alloydb_client import alloydb_client
-from .patent_filter import patent_filter
-from .utils import chunk_text, clean_date, has_valid_dates, safe_collection_name
+from ..patent_filter import patent_filter
+from ..utils import safe_name
+from .dates import extract_dates_from_pdf, get_dates_from_alloydb
+from .utils import chunk_text, clean_date, fmt_elapsed, safe_collection_name
 
 logger = logging.getLogger(__name__)
 
 gemini_client = gcp_utils.get_gemini_client()
 
-
-# ─────────────────────────────────────────────
-# Timing helper — every step below logs how long it took, so a stuck step
-# is visible instead of the log just going quiet.
-# ─────────────────────────────────────────────
-
-def _fmt_elapsed(start: float) -> str:
-    return f"{time.monotonic() - start:.1f}s"
 
 # ─────────────────────────────────────────────
 # Prompts
@@ -76,52 +70,12 @@ _OCR_TEXT_EXTRACTION_PROMPT = (
     "Return only plain text with no commentary or formatting."
 )
 
-DATE_EXTRACTION_PROMPT = """You are a patent document parser. This image is the cover page of a patent or patent application (it may be a scanned image with no embedded text — use OCR to read it).
-
-Extract ONLY these two dates:
-1. Filing date: look for ANY of these labels (in any language):
-   - "(22) Filed:" (US patents)
-   - "(22) International Filing Date:" (WO/PCT applications)
-   - "Filing Date:", "Date Filed:", "PCT Filed:"
-   - Any field labelled with INID code (22)
-2. Grant/Publication date: look for ANY of these labels (in any language):
-   - "(45) Date of Patent:" (US granted patents)
-   - "(43) International Publication Date:" (WO/PCT applications)
-   - "Grant Date:", "Published:", "Publication Date:"
-   - Any field labelled with INID code (43) or (45)
-
-Rules:
-- Return ONLY the dates for THIS patent/application (not cited prior art references)
-- For WO/PCT, EP, BR, MX, EA, JP applications: use the publication date as grant_date (or null if not found)
-- If a date is missing or unclear -> use null
-- Convert any date format to YYYY-MM-DD format
-
-Return ONLY valid JSON with no markdown, no explanation:
-{
-  "filing_date": "YYYY-MM-DD or null",
-  "grant_date":  "YYYY-MM-DD or null"
-}
-"""
-
-_OCR_DATE_PROMPT = """This is a scanned image of a patent cover page. Please carefully read ALL text in the image using OCR.
-
-Then extract ONLY these two dates:
-1. Filing date — look for "(22) Filed:" or "(22) International Filing Date:"
-2. Grant/Publication date — look for "(45) Date of Patent:" or "(43) International Publication Date:"
-
-Convert any dates you find to YYYY-MM-DD format.
-
-Return ONLY valid JSON:
-{"filing_date": "YYYY-MM-DD or null", "grant_date": "YYYY-MM-DD or null"}
-"""
-
 
 # ─────────────────────────────────────────────
 # Progress tracking (GCS-backed, via gcp_utils) — survives container restarts
 # ─────────────────────────────────────────────
 
 def _progress_filename(drug_name: str) -> str:
-    from .utils import safe_name
     return f"progress_{safe_name(drug_name)}.json"
 
 
@@ -132,8 +86,8 @@ def _load_progress(drug_name: str) -> set:
             completed = set(data.get("completed", []))
             logger.info("[RESUME] Found progress for '%s': %d patent(s) already done", drug_name, len(completed))
             return completed
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("[RESUME] Could not read progress for '%s' — starting from scratch: %s", drug_name, e)
     return set()
 
 
@@ -155,8 +109,8 @@ def _clear_progress(drug_name: str):
     try:
         if gcp_utils.delete_blob(config.GCS_INDEXER_PROGRESS_SUBFOLDER, _progress_filename(drug_name)):
             logger.info("[RESUME] Cleared progress for '%s' — batch complete", drug_name)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("[RESUME] Could not clear progress for '%s': %s", drug_name, e)
 
 
 # ─────────────────────────────────────────────
@@ -177,10 +131,10 @@ def download_single_patent_pdf(blob_name: str, filename: str, drug_name: str) ->
         local_path = tmp_dir / filename
         blob.download_to_filename(str(local_path))
         size_mb = local_path.stat().st_size / (1024 * 1024)
-        logger.info("[GCS] %s: downloaded %.1f MB in %s", filename, size_mb, _fmt_elapsed(start))
+        logger.info("[GCS] %s: downloaded %.1f MB in %s", filename, size_mb, fmt_elapsed(start))
         return {"filename": filename, "path": str(local_path), "tmp_dir": str(tmp_dir)}
     except Exception as e:
-        logger.error("[GCS] %s: download failed after %s: %s", filename, _fmt_elapsed(start), e)
+        logger.error("[GCS] %s: download failed after %s: %s", filename, fmt_elapsed(start), e)
         return None
 
 
@@ -208,9 +162,9 @@ async def upload_pdf_to_gemini(file_path: str) -> Optional[object]:
                 lambda: gemini_client.files.upload(file=file_path, config=dict(mime_type="application/pdf")),
             )
             logger.info("[UPLOAD] %s: upload call returned in %s (state=%s) — waiting for Gemini to finish processing...",
-                        path.name, _fmt_elapsed(upload_start), uploaded_file.state)
+                        path.name, fmt_elapsed(upload_start), uploaded_file.state)
 
-            max_wait, wait_time = 60, 0
+            max_wait, wait_time = config.GEMINI_UPLOAD_MAX_WAIT_SECONDS, 0
             while uploaded_file.state == "PROCESSING" and wait_time < max_wait:
                 await asyncio.sleep(2 + random.uniform(0, 0.5))
                 _file_name = uploaded_file.name
@@ -220,20 +174,20 @@ async def upload_pdf_to_gemini(file_path: str) -> Optional[object]:
                             path.name, wait_time, max_wait)
 
             if uploaded_file.state == "FAILED":
-                logger.error("[UPLOAD] %s: Gemini reported FAILED after %s", path.name, _fmt_elapsed(overall_start))
+                logger.error("[UPLOAD] %s: Gemini reported FAILED after %s", path.name, fmt_elapsed(overall_start))
                 return None
 
             if uploaded_file.state == "PROCESSING":
                 logger.warning("[UPLOAD] %s: still PROCESSING after %ds timeout — proceeding anyway (may fail downstream)",
                                 path.name, max_wait)
 
-            logger.info("[UPLOAD] %s: ready (state=%s) in %s total", path.name, uploaded_file.state, _fmt_elapsed(overall_start))
+            logger.info("[UPLOAD] %s: ready (state=%s) in %s total", path.name, uploaded_file.state, fmt_elapsed(overall_start))
             return uploaded_file
 
         except Exception as e:
             if attempt == config.MAX_UPLOAD_RETRIES:
                 logger.error("[UPLOAD] %s: failed after %d attempt(s) / %s: %s",
-                              path.name, config.MAX_UPLOAD_RETRIES, _fmt_elapsed(overall_start), e)
+                              path.name, config.MAX_UPLOAD_RETRIES, fmt_elapsed(overall_start), e)
                 return None
             backoff = (2 ** attempt) + random.uniform(0, 1)
             logger.warning("[UPLOAD] %s: attempt %d failed: %s — retrying in %.1fs", path.name, attempt, e, backoff)
@@ -261,10 +215,10 @@ async def extract_text_via_gemini(uploaded_file: object, filename: str) -> Optio
             pass
 
         text = response.text
-        logger.info("[TEXT EXTRACTION] %s: extracted %d character(s) in %s", filename, len(text or ""), _fmt_elapsed(start))
+        logger.info("[TEXT EXTRACTION] %s: extracted %d character(s) in %s", filename, len(text or ""), fmt_elapsed(start))
         return text
     except Exception as e:
-        logger.error("[TEXT EXTRACTION] %s: failed after %s: %s", filename, _fmt_elapsed(start), e)
+        logger.error("[TEXT EXTRACTION] %s: failed after %s: %s", filename, fmt_elapsed(start), e)
         return None
 
 
@@ -296,12 +250,12 @@ def extract_text_via_pymupdf(file_path: str, filename: str) -> Optional[str]:
         doc.close()
         combined = "\n\n".join(all_text)
         if len(combined.strip()) < 100:
-            logger.info("[PYMUPDF] %s: text layer too short (%s) — likely image-only PDF, will try OCR", filename, _fmt_elapsed(start))
+            logger.info("[PYMUPDF] %s: text layer too short (%s) — likely image-only PDF, will try OCR", filename, fmt_elapsed(start))
             return None
-        logger.info("[PYMUPDF] %s: extracted %d chars from text layer in %s", filename, len(combined), _fmt_elapsed(start))
+        logger.info("[PYMUPDF] %s: extracted %d chars from text layer in %s", filename, len(combined), fmt_elapsed(start))
         return combined
     except Exception as e:
-        logger.error("[PYMUPDF] %s: text extraction failed after %s: %s", filename, _fmt_elapsed(start), e)
+        logger.error("[PYMUPDF] %s: text extraction failed after %s: %s", filename, fmt_elapsed(start), e)
         return None
 
 
@@ -326,7 +280,7 @@ async def extract_text_via_ocr(file_path: str, filename: str) -> Optional[str]:
     try:
         png_list = await loop.run_in_executor(None, render_all_pages_as_pngs, file_path)
     except Exception as e:
-        logger.error("[OCR] %s: page rendering failed after %s: %s", filename, _fmt_elapsed(overall_start), e)
+        logger.error("[OCR] %s: page rendering failed after %s: %s", filename, fmt_elapsed(overall_start), e)
         return None
 
     if not png_list:
@@ -336,7 +290,7 @@ async def extract_text_via_ocr(file_path: str, filename: str) -> Optional[str]:
     batch_size = config.OCR_BATCH_SIZE
     n_batches = (len(png_list) + batch_size - 1) // batch_size
     logger.info("[OCR] %s: rendered %d page(s) in %s — sending to Gemini Vision in %d batch(es) of %d",
-                filename, len(png_list), _fmt_elapsed(overall_start), n_batches, batch_size)
+                filename, len(png_list), fmt_elapsed(overall_start), n_batches, batch_size)
 
     all_text_parts = []
     for batch_num, batch_start in enumerate(range(0, len(png_list), batch_size), start=1):
@@ -356,154 +310,19 @@ async def extract_text_via_ocr(file_path: str, filename: str) -> Optional[str]:
             if batch_text:
                 all_text_parts.append(batch_text)
             logger.info("[OCR] %s: batch %d/%d done in %s (%d chars)",
-                        filename, batch_num, n_batches, _fmt_elapsed(batch_start_time), len(batch_text))
+                        filename, batch_num, n_batches, fmt_elapsed(batch_start_time), len(batch_text))
         except Exception as e:
             logger.error("[OCR] %s: batch %d/%d failed after %s: %s",
-                          filename, batch_num, n_batches, _fmt_elapsed(batch_start_time), e)
+                          filename, batch_num, n_batches, fmt_elapsed(batch_start_time), e)
 
     if not all_text_parts:
-        logger.warning("[OCR] %s: no text recovered from any batch after %s", filename, _fmt_elapsed(overall_start))
+        logger.warning("[OCR] %s: no text recovered from any batch after %s", filename, fmt_elapsed(overall_start))
         return None
     combined = "\n\n".join(all_text_parts)
-    logger.info("[OCR] %s: extracted %d chars total via OCR in %s", filename, len(combined), _fmt_elapsed(overall_start))
+    logger.info("[OCR] %s: extracted %d chars total via OCR in %s", filename, len(combined), fmt_elapsed(overall_start))
     return combined
 
 
-# ─────────────────────────────────────────────
-# Date extraction
-# ─────────────────────────────────────────────
-
-def render_cover_pages_as_pngs(file_path: str, dpi: int = None, max_pages: int = 2) -> List[bytes]:
-    dpi = dpi or config.COVER_PAGE_DPI
-    import fitz
-    doc = fitz.open(file_path)
-    pages_to_render = min(max_pages, len(doc))
-    mat = fitz.Matrix(dpi / 72, dpi / 72)
-    pngs = [doc[i].get_pixmap(matrix=mat, alpha=False).tobytes("png") for i in range(pages_to_render)]
-    doc.close()
-    return pngs
-
-
-def _parse_gemini_date_response(raw: str) -> Dict:
-    if not raw or not raw.strip():
-        return {"filing_date": None, "grant_date": None}
-    cleaned = raw.strip()
-    if "```" in cleaned:
-        cleaned = re.sub(r"```(?:json)?", "", cleaned).replace("```", "").strip()
-    match = re.search(r"\{[^{}]*\}", cleaned, re.DOTALL)
-    if match:
-        cleaned = match.group(0)
-    try:
-        dates = json.loads(cleaned)
-        return {"filing_date": clean_date(dates.get("filing_date")), "grant_date": clean_date(dates.get("grant_date"))}
-    except (json.JSONDecodeError, AttributeError):
-        return {"filing_date": None, "grant_date": None}
-
-
-async def _call_gemini_for_dates(contents: list, filename: str) -> Dict:
-    try:
-        response = await gemini_client.aio.models.generate_content(
-            model=config.GEMINI_TEXT_MODEL,
-            contents=contents,
-            config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0, max_output_tokens=256),
-        )
-        raw = (response.text or "").strip()
-        if raw:
-            dates = _parse_gemini_date_response(raw)
-            if dates.get("filing_date") or dates.get("grant_date"):
-                return dates
-    except Exception as e:
-        logger.warning("[DATES] Structured call failed for %s: %s", filename, e)
-
-    try:
-        response = await gemini_client.aio.models.generate_content(
-            model=config.GEMINI_TEXT_MODEL,
-            contents=contents,
-            config=types.GenerateContentConfig(temperature=0, max_output_tokens=256),
-        )
-        raw = (response.text or "").strip()
-        if raw:
-            return _parse_gemini_date_response(raw)
-    except Exception as e:
-        logger.warning("[DATES] Free-form call also failed for %s: %s", filename, e)
-
-    return {"filing_date": None, "grant_date": None}
-
-
-async def extract_dates_from_pdf(file_path: str, filename: str) -> Dict:
-    """
-    Extract filing/grant dates from a patent PDF.
-
-    Fallback chain:
-      1. Native PDF upload to Gemini (trimmed to first 2 pages if large).
-      2. Render cover pages as PNGs and send to Gemini Vision.
-      3. OCR-focused vision prompt on the same rendered pages (last resort).
-    """
-    if not file_path or not Path(file_path).exists():
-        return {"filing_date": None, "grant_date": None}
-
-    overall_start = time.monotonic()
-    loop = asyncio.get_running_loop()
-
-    # Step 1: native PDF upload
-    logger.info("[DATE EXTRACTION] %s: step 1/3 — native PDF upload to Gemini...", filename)
-    try:
-        pdf_bytes = Path(file_path).read_bytes()
-        max_bytes = 2 * 1024 * 1024
-        if len(pdf_bytes) > max_bytes:
-            try:
-                import fitz
-                doc = fitz.open(file_path)
-                new_doc = fitz.open()
-                for i in range(min(2, len(doc))):
-                    new_doc.insert_pdf(doc, from_page=i, to_page=i)
-                pdf_bytes = new_doc.tobytes()
-                new_doc.close()
-                doc.close()
-            except ImportError:
-                if len(pdf_bytes) > 5 * 1024 * 1024:
-                    pdf_bytes = None
-
-        if pdf_bytes:
-            dates = await _call_gemini_for_dates(
-                contents=[types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"), DATE_EXTRACTION_PROMPT],
-                filename=filename,
-            )
-            if dates.get("filing_date") or dates.get("grant_date"):
-                logger.info("[DATE EXTRACTION] %s: resolved in %s (native PDF) -> Filed: %s | Granted: %s",
-                            filename, _fmt_elapsed(overall_start), dates["filing_date"], dates["grant_date"])
-                return dates
-    except Exception as e:
-        logger.warning("[DATE EXTRACTION] %s: native PDF upload failed: %s", filename, e)
-
-    # Step 2: cover-page vision
-    logger.info("[DATE EXTRACTION] %s: step 2/3 — rendering cover page(s) for Gemini Vision...", filename)
-    png_list: List[bytes] = []
-    try:
-        png_list = await loop.run_in_executor(None, render_cover_pages_as_pngs, file_path)
-    except Exception as e:
-        logger.warning("[DATE EXTRACTION] %s: cover page render failed: %s", filename, e)
-
-    if png_list:
-        contents = [types.Part.from_bytes(data=p, mime_type="image/png") for p in png_list]
-        contents.append(DATE_EXTRACTION_PROMPT)
-        dates = await _call_gemini_for_dates(contents=contents, filename=filename)
-        if dates.get("filing_date") or dates.get("grant_date"):
-            logger.info("[DATE EXTRACTION] %s: resolved in %s (vision) -> Filed: %s | Granted: %s",
-                        filename, _fmt_elapsed(overall_start), dates["filing_date"], dates["grant_date"])
-            return dates
-
-    # Step 3: OCR-focused vision (last resort, reuses rendered pages if any)
-    if not png_list:
-        logger.warning("[DATE EXTRACTION] %s: no pages rendered — giving up after %s", filename, _fmt_elapsed(overall_start))
-        return {"filing_date": None, "grant_date": None}
-    logger.info("[DATE EXTRACTION] %s: step 3/3 — OCR-focused vision prompt (last resort)...", filename)
-    contents = [types.Part.from_bytes(data=p, mime_type="image/png") for p in png_list]
-    contents.append(_OCR_DATE_PROMPT)
-    dates = await _call_gemini_for_dates(contents=contents, filename=filename)
-    logger.info("[DATE EXTRACTION] %s: finished in %s (OCR fallback) -> Filed: %s | Granted: %s",
-                filename, _fmt_elapsed(overall_start), dates.get("filing_date"), dates.get("grant_date"))
-    return dates
 
 
 # ─────────────────────────────────────────────
@@ -536,7 +355,7 @@ async def generate_embeddings(texts: List[str], filename: str = "") -> List[List
                     for emb in result.embeddings:
                         embeddings.append(emb.values)
                     logger.info("[EMBEDDINGS] %s: batch %d/%d done in %s",
-                                filename or "?", batch_num, n_batches, _fmt_elapsed(batch_start))
+                                filename or "?", batch_num, n_batches, fmt_elapsed(batch_start))
                     break
                 except Exception as e:
                     if attempt == config.MAX_EMBED_RETRIES:
@@ -545,10 +364,10 @@ async def generate_embeddings(texts: List[str], filename: str = "") -> List[List
                     logger.warning("[EMBEDDINGS] %s: batch %d/%d attempt %d failed — retrying in %.1fs",
                                    filename or "?", batch_num, n_batches, attempt, backoff)
                     await asyncio.sleep(backoff)
-        logger.info("[EMBEDDINGS] %s: all %d batch(es) done in %s", filename or "?", n_batches, _fmt_elapsed(overall_start))
+        logger.info("[EMBEDDINGS] %s: all %d batch(es) done in %s", filename or "?", n_batches, fmt_elapsed(overall_start))
         return embeddings
     except Exception as e:
-        logger.error("[EMBEDDINGS] %s: generation failed after %s: %s", filename or "?", _fmt_elapsed(overall_start), e)
+        logger.error("[EMBEDDINGS] %s: generation failed after %s: %s", filename or "?", fmt_elapsed(overall_start), e)
         return []
 
 
@@ -556,7 +375,7 @@ async def generate_embeddings(texts: List[str], filename: str = "") -> List[List
 # AlloyDB helpers
 # ─────────────────────────────────────────────
 
-_chroma_write_lock = asyncio.Lock()
+_write_lock = asyncio.Lock()
 
 
 def sanitize_collection_name(drug_name: str) -> str:
@@ -587,31 +406,6 @@ def sentinel_exists(collection, filename: str) -> bool:
         return False
 
 
-def get_dates_from_alloydb(collection, filename: str) -> dict:
-    """Read filing/grant dates for a patent from AlloyDB (sentinel, then chunk_0)."""
-    file_hash = hashlib.md5(filename.encode()).hexdigest()
-
-    try:
-        result = collection.get(ids=[file_hash + "_complete"], include=["metadatas"])
-        if result["metadatas"]:
-            meta = result["metadatas"][0]
-            filing, grant = meta.get("filing_date") or None, meta.get("grant_date") or None
-            if filing or grant:
-                return {"filing_date": filing, "grant_date": grant}
-    except Exception as e:
-        logger.warning("[DATES] Sentinel read failed for %s: %s", filename, e)
-
-    try:
-        result = collection.get(ids=[f"{file_hash}_chunk_0"], include=["metadatas"])
-        if result["metadatas"]:
-            meta = result["metadatas"][0]
-            filing, grant = meta.get("filing_date") or None, meta.get("grant_date") or None
-            if filing or grant:
-                return {"filing_date": filing, "grant_date": grant}
-    except Exception as e:
-        logger.warning("[DATES] Chunk-0 read failed for %s: %s", filename, e)
-
-    return {"filing_date": None, "grant_date": None}
 
 
 async def index_text(drug_name: str, filename: str, text: str, collection, dates: dict = None) -> bool:
@@ -625,17 +419,17 @@ async def index_text(drug_name: str, filename: str, text: str, collection, dates
         if collection.get(ids=[sentinel_id])["ids"]:
             logger.info("[INDEXING] Already fully indexed: %s", filename)
             return True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("[INDEXING] Sentinel check failed for %s: %s", filename, e)
 
     try:
         stale = collection.get(where={"filename": filename}, include=["ids"])
         if stale["ids"]:
             logger.info("[INDEXING] Incomplete index for %s — clearing and re-indexing", filename)
-            async with _chroma_write_lock:
+            async with _write_lock:
                 collection.delete(where={"filename": filename})
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("[INDEXING] Stale-chunk cleanup failed for %s: %s", filename, e)
 
     logger.info("[INDEXING] %s: chunking %d character(s) (chunk_size=%d, overlap=%d)...",
                 filename, len(text), config.CHUNK_SIZE_CHARS, config.OVERLAP_CHARS)
@@ -643,7 +437,7 @@ async def index_text(drug_name: str, filename: str, text: str, collection, dates
     if not chunks:
         logger.warning("[INDEXING] %s: chunk_text produced 0 chunks — nothing to index", filename)
         return False
-    logger.info("[INDEXING] %s: produced %d chunk(s) in %s", filename, len(chunks), _fmt_elapsed(start))
+    logger.info("[INDEXING] %s: produced %d chunk(s) in %s", filename, len(chunks), fmt_elapsed(start))
 
     embeddings = await generate_embeddings(chunks, filename=filename)
     if not embeddings:
@@ -655,7 +449,7 @@ async def index_text(drug_name: str, filename: str, text: str, collection, dates
     grant_date = clean_date(dates.get("grant_date")) or ""
 
     logger.info("[INDEXING] %s: writing %d chunk(s) + sentinel to AlloyDB...", filename, len(chunks))
-    async with _chroma_write_lock:
+    async with _write_lock:
         collection.add(
             documents=chunks,
             embeddings=embeddings,
@@ -679,7 +473,7 @@ async def index_text(drug_name: str, filename: str, text: str, collection, dates
         )
 
     logger.info("[INDEXING] %s — %d chunks stored in %s total | Filed: %s | Granted: %s",
-                filename, len(chunks), _fmt_elapsed(start), filing_date or "unknown", grant_date or "unknown")
+                filename, len(chunks), fmt_elapsed(start), filing_date or "unknown", grant_date or "unknown")
     return True
 
 
@@ -693,14 +487,17 @@ def find_in_any_collection(filename: str) -> Optional[str]:
             existing = client.get_collection(col.name)
             if existing.get(ids=[sid])["ids"]:
                 return col.name
-        except Exception:
-            continue
+        except Exception as e:
+            logger.debug("[INDEXING] Could not check collection %s for %s: %s", col.name, filename, e)
     return None
 
 
 async def copy_from_collection(filename: str, source_name: str, target_collection, target_drug: str) -> bool:
-    """Copy all chunks + sentinel from source to target collection. Dates
-    are embedded in chunk metadata, so they transfer automatically."""
+    """Copy all chunks + sentinel from source to target collection; the
+    source collection is left unchanged. Dates are embedded in chunk
+    metadata, so they transfer automatically."""
+    if source_name == target_collection.name:
+        return True
     try:
         source = alloydb_client().get_collection(source_name)
         file_hash = hashlib.md5(filename.encode()).hexdigest()
@@ -709,8 +506,10 @@ async def copy_from_collection(filename: str, source_name: str, target_collectio
             where={"$and": [{"filename": {"$eq": filename}}, {"chunk_index": {"$gte": 0}}]},
             include=["documents", "metadatas", "embeddings"],
         )
+        async with _write_lock:
+            target_collection.delete(where={"filename": filename})
         if chunks["ids"]:
-            async with _chroma_write_lock:
+            async with _write_lock:
                 target_collection.add(
                     documents=chunks["documents"], embeddings=chunks["embeddings"],
                     metadatas=[{**m, "drug": target_drug} for m in chunks["metadatas"]], ids=chunks["ids"],
@@ -720,7 +519,7 @@ async def copy_from_collection(filename: str, source_name: str, target_collectio
         sentinel_id = f"{file_hash}_complete"
         sentinel = source.get(ids=[sentinel_id], include=["documents", "metadatas", "embeddings"])
         if sentinel["ids"]:
-            async with _chroma_write_lock:
+            async with _write_lock:
                 target_collection.add(
                     documents=sentinel["documents"], embeddings=sentinel["embeddings"],
                     metadatas=[{**sentinel["metadatas"][0], "drug": target_drug}], ids=[sentinel_id],
@@ -766,7 +565,7 @@ async def _process_single_patent(
     logger.info("[PATENT] %s %s: queued, waiting for a free slot...", position, filename)
 
     async with semaphore:
-        logger.info("[PATENT] %s %s: starting (waited %s for a slot)", position, filename, _fmt_elapsed(patent_start))
+        logger.info("[PATENT] %s %s: starting (waited %s for a slot)", position, filename, fmt_elapsed(patent_start))
         step_start = time.monotonic()
 
         _mark_step("checking cache (AlloyDB sentinel)")
@@ -775,7 +574,7 @@ async def _process_single_patent(
             if existing_dates.get("filing_date"):
                 if completed is not None:
                     _mark_completed(drug_name, filename, completed)
-                _finish(f"already indexed — skipped (checked in {_fmt_elapsed(step_start)})")
+                _finish(f"already indexed — skipped (checked in {fmt_elapsed(step_start)})")
                 return {"filename": filename, "path": None, "tmp_dir": None}
 
         _mark_step("checking other drugs' collections for a cached copy")
@@ -787,7 +586,7 @@ async def _process_single_patent(
                 await copy_from_collection(filename, source_col, collection, drug_name)
                 if completed is not None:
                     _mark_completed(drug_name, filename, completed)
-                _finish(f"copied from '{source_col}' in {_fmt_elapsed(step_start)}")
+                _finish(f"copied from '{source_col}' in {fmt_elapsed(step_start)}")
                 return {"filename": filename, "path": None, "tmp_dir": None}
 
         _mark_step("downloading PDF from GCS")
@@ -795,14 +594,14 @@ async def _process_single_patent(
         pf = await loop.run_in_executor(None, download_single_patent_pdf, ref["blob_name"], filename, drug_name)
         if not pf:
             logger.warning("[WARNING] Could not download %s", filename)
-            _finish(f"download failed after {_fmt_elapsed(step_start)}")
+            _finish(f"download failed after {fmt_elapsed(step_start)}")
             return {"filename": filename, "path": None, "tmp_dir": None}
 
         try:
             _mark_step("uploading to Gemini Files API")
             uploaded_file = await upload_pdf_to_gemini(pf["path"])
             if not uploaded_file:
-                _finish(f"Gemini upload failed after {_fmt_elapsed(step_start)}")
+                _finish(f"Gemini upload failed after {fmt_elapsed(step_start)}")
                 return pf
 
             _mark_step("extracting text + filing/grant dates (parallel)")
@@ -824,10 +623,10 @@ async def _process_single_patent(
                 await index_text(drug_name, filename, text, collection, dates=dates)
                 if completed is not None:
                     _mark_completed(drug_name, filename, completed)
-                outcome = f"fully indexed in {_fmt_elapsed(step_start)}"
+                outcome = f"fully indexed in {fmt_elapsed(step_start)}"
             else:
                 logger.warning("[WARNING] No text extracted from %s — all methods failed", filename)
-                outcome = f"no text extracted (all methods failed) after {_fmt_elapsed(step_start)}"
+                outcome = f"no text extracted (all methods failed) after {fmt_elapsed(step_start)}"
 
             # Cleanup happens BEFORE _finish() so the heartbeat doesn't show
             # this patent as both "done" and still "in flight" for the
@@ -838,8 +637,8 @@ async def _process_single_patent(
             _finish(outcome)
 
         except Exception as e:
-            logger.error("[ERROR] %s: processing failed after %s: %s", filename, _fmt_elapsed(step_start), e)
-            _finish(f"errored after {_fmt_elapsed(step_start)}: {e}")
+            logger.error("[ERROR] %s: processing failed after %s: %s", filename, fmt_elapsed(step_start), e)
+            _finish(f"errored after {fmt_elapsed(step_start)}: {e}")
 
         finally:
             if pf.get("tmp_dir"):
@@ -867,7 +666,7 @@ async def _heartbeat(drug_name: str, progress: dict, run_start: float):
             done, total = progress["done"], progress["total"]
             in_progress = dict(progress["in_progress"])
             logger.info("[HEARTBEAT] '%s': %d/%d done | %d in flight | elapsed %s",
-                        drug_name, done, total, len(in_progress), _fmt_elapsed(run_start))
+                        drug_name, done, total, len(in_progress), fmt_elapsed(run_start))
             for filename, info in sorted(in_progress.items(), key=lambda kv: kv[1]["since"]):
                 waited = time.monotonic() - info["since"]
                 flag = "  <-- stuck here a while" if waited > interval * 2 else ""
@@ -953,7 +752,7 @@ async def indexer(drug_name: str, reindex: bool = False, max_concurrency: Option
         _clear_progress(drug_name)
 
     logger.info("[INDEXER] '%s': run finished in %s — %d/%d patent(s) completed",
-                drug_name, _fmt_elapsed(run_start), progress["done"], progress["total"])
+                drug_name, fmt_elapsed(run_start), progress["done"], progress["total"])
 
     return downloaded_files
 

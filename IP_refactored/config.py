@@ -7,9 +7,18 @@ defaults, model names, tunables) used across the IP_refactored package.
 Every other module imports what it needs from here instead of calling
 os.getenv() directly. This keeps all configuration visible in one place and
 makes env vars easy to audit / change in one spot.
+
+Values are read from the process environment. A `.env` file (searched for
+from this package's directory upwards) is loaded first if present; variables
+already set in the environment win over the file, so Cloud Run job settings
+are never overridden by a stray .env.
 """
 
 import os
+
+from dotenv import load_dotenv
+
+load_dotenv(override=False)
 
 # ─────────────────────────────────────────────
 # Google Cloud project / auth
@@ -22,7 +31,8 @@ GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 # BigQuery
 # ─────────────────────────────────────────────
 
-BQ_PROJECT_ID    = os.getenv("BQ_PROJECT_ID", PROJECT_ID)
+# DIM_SCORES_TABLE is a bare table name, combined with PROJECT_ID / BQ_DATASET_ID
+# by gcp_utils. Every other BigQuery table is configured as ONE fully-qualified ID.
 BQ_DATASET_ID    = os.getenv("BQ_DATASET_ID", "cognito_prod_datamart")
 DIM_SCORES_TABLE = os.getenv("DIM_SCORES_TABLE", "dimension_scores")
 
@@ -40,6 +50,12 @@ GCS_PIPELINE_CACHE_BASE_PATH    = os.getenv("GCS_PIPELINE_CACHE_BASE_PATH", "pip
 # Generic cache prefix used by gcp_utils' blob-cache helpers (progress
 # markers, JSON caches, etc.) — defaults to the pipeline cache base path.
 GCS_CACHE_PREFIX = os.getenv("GCS_CACHE_PREFIX", GCS_PIPELINE_CACHE_BASE_PATH)
+
+# LOE (Primary Market) PDF reports (primary_market_entry_horizon/generate_report_and_rationale/generate_report.py):
+#   gs://{REPORT_GCS_BUCKET}/{REPORT_GCS_PATH}/{drug}/IP/Primary Market Entry Horizon.pdf
+#   gs://{REPORT_GCS_BUCKET}/{REPORT_GCS_PATH}/{drug}/IP/archive/Primary Market Entry Horizon+{timestamp}.pdf
+REPORT_GCS_BUCKET = os.getenv("REPORT_GCS_BUCKET") or GCS_BUCKET
+REPORT_GCS_PATH   = os.getenv("REPORT_GCS_PATH", "Cognito_new/reports").strip("/")
 
 # Patent PDFs live under gs://{GCS_BUCKET}/{GCS_PATENTS_PREFIX}/{drug_name}/*.pdf
 GCS_PATENTS_PREFIX = os.getenv("GCS_PATENTS_PREFIX", "Cognito_new/Master_patent_list")
@@ -123,47 +139,26 @@ PUBMED_EMAIL   = os.getenv("PUBMED_EMAIL", "patent_analysis@example.com")
 NCBI_API_KEY   = os.getenv("NCBI_API_KEY", "")
 
 # ─────────────────────────────────────────────
-# Primary market entry horizon — phase fetching (phase_fetcher.py)
+# Primary market entry horizon — phase fetching (score_calculation/phase_fetcher.py)
 # ─────────────────────────────────────────────
 
 # Fully-qualified (project.dataset.table) BigQuery table for clinical-trial
-# phase data. Lives in a separate GCP project from everything else
-# (cognito-dev-380506.data_mart), so it's given fully-qualified rather than
-# combined with BQ_PROJECT_ID/BQ_DATASET_ID. phase_fetcher.py detects a
-# fully-qualified value (2 dots) and uses it as-is; a bare table name is
-# still combined with BQ_PROJECT_ID/BQ_DATASET_ID for backward compatibility.
+# phase data (lives in a separate GCP project from everything else).
 CLINICAL_EFFICACY_TABLE = os.getenv("CLINICAL_EFFICACY_TABLE", "cognito-dev-380506.data_mart.clinical_efficacy_glp1")
 
-# Secondary phase source ("the drug list table") — the same BigQuery view
-# chunking/drug_list.py resolves the GLP-1 drug list from (DRUG_LIST_VIEW).
-# Bare table/view name: phase_fetcher.py looks it up in the SAME
-# project/dataset as CLINICAL_EFFICACY_TABLE above (cognito-dev-380506.data_mart)
-# whenever that table is fully-qualified, since this view lives alongside it.
-# (DRUG_LIST_VIEW itself is defined further down this file, as
-# "vw_drug_details_full" — kept as a literal default here since it's used
-# before that point in the file.)
-DRUG_DETAILS_TABLE = os.getenv("DRUG_DETAILS_TABLE", "vw_drug_details_full")
-
-# (No local Excel fallback for phase data — phase_fetcher.py sources every
-# phase from BigQuery, clinical_efficacy + DRUG_DETAILS_TABLE, only.)
+# Secondary phase source ("the drug list table") — fully-qualified BigQuery
+# view with per-drug details (phase, LOE date, geography).
+DRUG_DETAILS_TABLE = os.getenv("DRUG_DETAILS_TABLE", "cognito-dev-380506.data_mart.vw_drug_details_full")
 
 # ─────────────────────────────────────────────
-# Primary market entry horizon — approval date fetching (approval_date_fetcher.py)
+# Primary market entry horizon — approval date fetching (score_calculation/approval_date_fetcher.py)
 # ─────────────────────────────────────────────
 
+# Fully-qualified brands table (project.dataset.table); empty = brand lookup disabled.
 BQ_BRANDS_TABLE = os.getenv("BQ_BRANDS_TABLE", "")
 
 # ─────────────────────────────────────────────
-# Primary market entry horizon — Excel export (excel_exporter.py)
-# ─────────────────────────────────────────────
-
-# GCS location (gs://{GCS_BUCKET}/{GCS_EXCEL}/...) where per-drug and
-# combined Excel reports are written. This is the single output location
-# dimension_1.py writes its Excel deliverable to.
-GCS_EXCEL = os.getenv("GCS_EXCEL", "patent_exports")
-
-# ─────────────────────────────────────────────
-# Cloud Run Jobs — sharding (dimension_1.py)
+# Cloud Run Jobs — sharding (run_ip_dimension.py)
 # ─────────────────────────────────────────────
 # Provided automatically by Cloud Run Jobs for each task in the job; default
 # to a single task when run locally / outside Cloud Run.
@@ -171,9 +166,9 @@ CLOUD_RUN_TASK_INDEX = int(os.getenv("CLOUD_RUN_TASK_INDEX", "0"))
 CLOUD_RUN_TASK_COUNT = int(os.getenv("CLOUD_RUN_TASK_COUNT", "1"))
 
 # ─────────────────────────────────────────────
-# Drug selection (dimension_1.py)
+# Drug selection (run_ip_dimension.py)
 # ─────────────────────────────────────────────
-# Optional. When set, dimension_1.py runs ONLY for the drug(s) named here
+# Optional. When set, run_ip_dimension.py runs ONLY for the drug(s) named here
 # instead of discovering every drug folder under GCS_PATENTS_PREFIX.
 # Accepts a single drug name, or multiple drug names separated by commas,
 # e.g. "Semaglutide" or "Semaglutide, Tirzepatide, Liraglutide".
@@ -182,23 +177,176 @@ CLOUD_RUN_TASK_COUNT = int(os.getenv("CLOUD_RUN_TASK_COUNT", "1"))
 DRUG_NAME = os.getenv("DRUG_NAME", "")
 
 # ─────────────────────────────────────────────
-# Patent-master filter (chunking/patent_filter.py)
+# Patent-master filter (patent_filter.py)
 # ─────────────────────────────────────────────
 # Fully-qualified BigQuery table (project.dataset.table) listing every
 # patent known for each molecule, with its download/review status and a
 # confidence score. patent_filter() only returns GCS PDFs whose patent
 # number has a row here with patent_status = 'PDF Downloaded' and
-# confidence > 0.3 — so indexing, analysis, and the Excel output are all
+# confidence > 0.3 — so indexing, analysis, and the output tables are all
 # restricted to this approved set, for either a single molecule or (when
 # no molecule is given) every molecule in the table.
 PATENT_MASTER_TABLE = os.getenv("PATENT_MASTER_TABLE", "cognito-dev-380506.stage.patent_master")
 
 # ─────────────────────────────────────────────
-# Drug-list discovery via BigQuery (chunking/drug_list.py)
+# Drug-list discovery via BigQuery (drug_list.py)
 # ─────────────────────────────────────────────
-# BigQuery view queried to resolve the target drug list (by
-# cleaned_generic_name) for a given mechanism-of-action / target filter —
-# e.g. every GLP-1 drug — instead of relying on GCS folder discovery or a
-# manually-set DRUG_NAME. Lives in the same project/dataset as everything
-# else (PROJECT_ID / BQ_DATASET_ID above).
-DRUG_LIST_VIEW = os.getenv("DRUG_LIST_VIEW", "vw_drug_details_full")
+# Fully-qualified BigQuery view (project.dataset.view) queried to resolve the
+# target drug list (by cleaned_generic_name) for a given mechanism-of-action /
+# target filter — e.g. every GLP-1 drug — instead of relying on GCS folder
+# discovery or a manually-set DRUG_NAME.
+DRUG_LIST_VIEW = os.getenv("DRUG_LIST_VIEW", "cognito-prod-394707.cognito_prod_datamart.vw_drug_details_full")
+
+# ─────────────────────────────────────────────
+# Patent filter — quality gates (patent_filter.py)
+# ─────────────────────────────────────────────
+# Only patents whose patent_status matches this string AND whose confidence
+# score exceeds the threshold are considered approved for indexing/analysis.
+PATENT_STATUS_FILTER       = os.getenv("PATENT_STATUS_FILTER", "PDF Downloaded")
+PATENT_CONFIDENCE_THRESHOLD = float(os.getenv("PATENT_CONFIDENCE_THRESHOLD", "0.3"))
+
+# ─────────────────────────────────────────────
+# AlloyDB — connection tunables (chunking/alloydb_client.py)
+# ─────────────────────────────────────────────
+ALLOYDB_CONNECT_TIMEOUT = int(os.getenv("ALLOYDB_CONNECT_TIMEOUT", "30"))
+ALLOYDB_RETRY_COUNT     = int(os.getenv("ALLOYDB_RETRY_COUNT", "3"))
+ALLOYDB_RETRY_BACKOFF   = float(os.getenv("ALLOYDB_RETRY_BACKOFF", "2.0"))
+
+# ─────────────────────────────────────────────
+# Indexer — Gemini upload + date-extraction tunables (chunking/indexer.py)
+# ─────────────────────────────────────────────
+# How long (seconds) to wait for Gemini to finish processing an uploaded PDF
+# before proceeding anyway.
+GEMINI_UPLOAD_MAX_WAIT_SECONDS = int(os.getenv("GEMINI_UPLOAD_MAX_WAIT_SECONDS", "60"))
+# Maximum PDF size (bytes) passed as a raw byte payload for date extraction;
+# larger PDFs are trimmed to the first 2 pages before sending.
+DATE_EXTRACTION_PDF_MAX_BYTES = int(os.getenv("DATE_EXTRACTION_PDF_MAX_BYTES", str(2 * 1024 * 1024)))
+
+# ─────────────────────────────────────────────
+# Primary market entry horizon — exclusivity offsets + score thresholds
+# (primary_market_entry_horizon/score_calculation/patent_scores.py)
+# ─────────────────────────────────────────────
+# Statutory patent term, counted from the filing date (before any PTE).
+PATENT_TERM_YEARS = 20
+
+# Years of market exclusivity added on top of the approval date per jurisdiction.
+EXCLUSIVITY_OFFSET_US      = int(os.getenv("EXCLUSIVITY_OFFSET_US", "5"))
+EXCLUSIVITY_OFFSET_EP      = int(os.getenv("EXCLUSIVITY_OFFSET_EP", "10"))
+EXCLUSIVITY_OFFSET_DEFAULT = int(os.getenv("EXCLUSIVITY_OFFSET_DEFAULT", "8"))
+
+# Avg-years-to-entry breakpoints for the 1–5 IP score:
+#   avg <= SCORE_THRESHOLD_5 → 5   (most blocking)
+#   avg <= SCORE_THRESHOLD_4 → 4
+#   avg <= SCORE_THRESHOLD_3 → 3
+#   avg <= SCORE_THRESHOLD_2 → 2
+#   else                     → 1
+SCORE_THRESHOLD_5 = int(os.getenv("SCORE_THRESHOLD_5", "6"))
+SCORE_THRESHOLD_4 = int(os.getenv("SCORE_THRESHOLD_4", "8"))
+SCORE_THRESHOLD_3 = int(os.getenv("SCORE_THRESHOLD_3", "11"))
+SCORE_THRESHOLD_2 = int(os.getenv("SCORE_THRESHOLD_2", "13"))
+
+# ─────────────────────────────────────────────
+# Approval date fetcher — HTTP / API tunables
+# (primary_market_entry_horizon/score_calculation/approval_date_fetcher.py)
+# ─────────────────────────────────────────────
+APPROVAL_HTTP_DELAY           = float(os.getenv("APPROVAL_HTTP_DELAY", "0.7"))
+APPROVAL_HTTP_TIMEOUT         = int(os.getenv("APPROVAL_HTTP_TIMEOUT", "15"))
+APPROVAL_DOMAIN_CHECK_TIMEOUT = float(os.getenv("APPROVAL_DOMAIN_CHECK_TIMEOUT", "3.0"))
+FDA_API_BRAND_SEARCH_LIMIT    = int(os.getenv("FDA_API_BRAND_SEARCH_LIMIT", "10"))
+FDA_API_APPROVAL_SEARCH_LIMIT = int(os.getenv("FDA_API_APPROVAL_SEARCH_LIMIT", "5"))
+
+# ─────────────────────────────────────────────
+# Forecasted LOE merge pipeline
+# (primary_market_entry_horizon/score_calculation/merge_forecasted_loe.py, scoring.py; bq_utils.py)
+# ─────────────────────────────────────────────
+
+# Source: fully-qualified BQ table containing forecasted patent LOE data.
+FORECASTED_LOE_TABLE = os.getenv(
+    "FORECASTED_LOE_TABLE",
+    "cognito-prod-394707.cognito_prod_datamart.forecasted_loe",
+)
+
+# Output BQ tables (fully-qualified) written by primary_market_entry_horizon() at the end of each drug run.
+# glp_patent_loe  — blocking-analysis results only (Type="Existing") + scores.
+# glp_master_loe  — patents merged with forecasted_loe (Type="Forecasted") + final scores.
+# Each run replaces only that drug's rows, so re-runs and parallel Cloud Run
+# tasks (one drug each) never duplicate or clobber other drugs' rows.
+BQ_PATENT_LOE_TABLE = os.getenv("BQ_PATENT_LOE_TABLE", "cognito-prod-394707.cognito_prod_datamart.glp_patent_loe")
+BQ_MASTER_LOE_TABLE = os.getenv("BQ_MASTER_LOE_TABLE", "cognito-prod-394707.cognito_prod_datamart.glp_master_loe")
+
+# JSON snapshot of each output table:
+#   gs://{GCS_BUCKET}/{GCS_CACHE_PREFIX}/{GCS_JSON_EXPORT}/{table name}/{drug}_{YYYYMMDD_HHMMSS}.json
+GCS_JSON_EXPORT = os.getenv("GCS_JSON_EXPORT", "loe_json_exports")
+
+# When True, forecasted_loe rows for Marketed/Pre-registration drugs are kept
+# (real LOE data does NOT supersede the forecast).
+# Default False: real data supersedes forecasts for Marketed/Pre-reg drugs.
+NO_MARKETED_SKIP = os.getenv("NO_MARKETED_SKIP", "false").lower() in ("1", "true", "yes")
+
+# ── Column config for the merge pipeline ─────────────────────────────────────
+# These are structured constants — too complex for env vars, edit in-place.
+
+# Columns to drop from the combined DataFrame before writing to BQ.
+DROP_COLUMNS: list = ["rationale"]
+
+# Maps normalised(forecasted_loe column) → normalised(target column).
+# Add entries here when auto-alignment fails because a column name in
+# forecasted_loe is too different from the matching patent-table column name.
+MANUAL_COLUMN_ALIASES: dict = {
+    "filingdatelower": "filingdate",
+    "globalphase":     "phase",
+}
+
+# Canonical output column definitions for glp_master_loe (in output order).
+# Each entry: (canonical_name, [alternative_token_lists]).
+# Each alternative is a list of lowercase tokens that must ALL appear in the
+# normalised column name, or a tuple (required_tokens, exclude_tokens).
+# Columns not found in the merged DataFrame are filled with blank (NA).
+FINAL_COLUMNS: list = [
+    ("Drug Name",                       [["drug"]]),
+    ("Jurisdiction",                    [["jurisdiction"]]),
+    ("Tag",                             [["tag"]]),
+    ("Type",                            [["type"]]),
+    ("Filing Date",                     [["filing", "date"]]),
+    ("Patent Number",                   [["patent", "number"]]),
+    ("No Of Forecasted Patents",        [["noofforecastedpatents"],
+                                          ["numberofforecastedpatents"],
+                                          ["forecastedpatents"],
+                                          ["noofforecasted"]]),
+    ("Years to Entry",                  [(["years", "entry"], ["avg"])]),
+    ("Avg Years to Entry (US & EP)",    [["avgyears", "usep"], ["avgyears"]]),
+    ("IP Dimension 1 Score",            [["ipdimension"]]),
+    ("Step 1 Claim Category",           [["step1claimcategory"], ["step", "claim", "category"]]),
+    ("Grant Date",                      [["grant", "date"]]),
+    ("PTE (months)",                    [["pte"]]),
+    ("Pediatric Exclusivity",           [["pediatric"]]),
+    ("Controlling Patent Expiry Year",  [["controlling", "expiry"]]),
+    ("Exclusivity Year",                [["exclusivity", "year"]]),
+    ("Approval Date",                   [["approval", "date"]]),
+    ("Est. Approval Year",              [["est", "approval", "year"]]),
+    ("Phase",                           [["phase"]]),
+    ("Strategic Purpose",               [["strategic", "purpose"]]),
+    ("Risk Assessment",                 [["risk", "assessment"]]),
+    ("Overall Forecast",                [["overall", "forecast"]]),
+    ("Portfolio Gaps",                  [["portfolio", "gaps"]]),
+    ("Existing Patent Summary",         [["existing", "patent", "summary"]]),
+    ("Blocking Category",               [["blocking", "category"]]),
+    ("Reason",                          [["reason"]]),
+]
+
+# BigQuery column types for the output tables, keyed by friendly column name.
+# Any column not listed here is written as STRING. An explicit schema keeps
+# the table stable across runs (autodetect would type an all-blank column
+# differently from one run to the next and break WRITE_APPEND).
+BQ_COLUMN_TYPES: dict = {
+    "No Of Forecasted Patents":       "INT64",
+    "Years to Entry":                 "FLOAT64",
+    "Avg Years to Entry (US & EP)":   "FLOAT64",
+    "IP Dimension 1 Score":           "FLOAT64",
+    "PTE (months)":                   "FLOAT64",
+    "Controlling Patent Expiry Year": "FLOAT64",
+    "Exclusivity Year":               "FLOAT64",
+    "Est. Approval Year":             "FLOAT64",
+    "Avg Years to Entry":             "FLOAT64",
+    "Score":                          "FLOAT64",
+}

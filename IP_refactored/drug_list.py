@@ -14,20 +14,22 @@ All BigQuery / GCS access goes through IP_refactored.gcp_utils; all
 configuration (project, dataset) comes from IP_refactored.config.
 
 Usage:
-    from IP_refactored.chunking.drug_list import get_glp1_drug_names, list_glp1_patent_files
+    from IP_refactored.drug_list import drug_list, list_glp1_patent_files
 
-    drugs         = get_glp1_drug_names()        # ["liraglutide", "semaglutide", ...]
+    drugs         = drug_list()        # ["liraglutide", "semaglutide", ...]
     files_by_drug = list_glp1_patent_files()      # {"semaglutide": [{"filename": ..., "blob_name": ...}, ...], ...}
 
 CLI:
-    python -m IP_refactored.chunking.drug_list
+    python -m IP_refactored.drug_list
 """
 
 import logging
+from functools import lru_cache
 from typing import Dict, List
 
-from .. import config
-from .. import gcp_utils
+from . import config
+from . import gcp_utils
+from .utils import normalize, normalize_drug_str
 from .patent_filter import patent_filter
 
 logger = logging.getLogger(__name__)
@@ -35,16 +37,11 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────
 # BigQuery — GLP-1 drug discovery query
 # ─────────────────────────────────────────────
-# Table is addressed via config.BQ_PROJECT_ID / config.BQ_DATASET_ID (same
-# source of truth as every other BigQuery call in this package) rather than
-# hardcoding the project/dataset, so it follows PROJECT_ID / BQ_PROJECT_ID
-# env var overrides like everything else in config.py.
-
-GLP1_DRUG_VIEW = "vw_drug_details_full"
+# The view is addressed by its fully-qualified ID, config.DRUG_LIST_VIEW.
 
 GLP1_DRUG_QUERY = """
 SELECT DISTINCT cleaned_generic_name
-FROM `{project}.{dataset}.{view}`
+FROM `{view}`
 WHERE (
     UPPER(cleaned_Target) LIKE '%GLUCAGON LIKE PEPTIDE 1%'
     OR UPPER(cleaned_Target) LIKE '%GLP-1%'
@@ -56,7 +53,7 @@ AND LOWER(Mechanism_of_Action) NOT LIKE '%antagonist%'
 """
 
 
-def get_glp1_drug_names() -> List[str]:
+def drug_list() -> List[str]:
     """
     Runs the GLP-1 drug-discovery query against BigQuery and returns every
     distinct `cleaned_generic_name`, lower-cased and de-duplicated, sorted.
@@ -65,12 +62,9 @@ def get_glp1_drug_names() -> List[str]:
         Sorted list of lower-case drug names, e.g. ["liraglutide", "semaglutide", ...]
         Empty list if the query fails or returns nothing.
     """
-    query = GLP1_DRUG_QUERY.format(
-        project=config.BQ_PROJECT_ID, dataset=config.BQ_DATASET_ID, view=GLP1_DRUG_VIEW,
-    )
+    query = GLP1_DRUG_QUERY.format(view=config.DRUG_LIST_VIEW)
     logger.info(
-        "[DRUG_LIST] Querying GLP-1 drug list from %s.%s.%s",
-        config.BQ_PROJECT_ID, config.BQ_DATASET_ID, GLP1_DRUG_VIEW,
+        "[DRUG_LIST] Querying GLP-1 drug list from %s", config.DRUG_LIST_VIEW,
     )
 
     try:
@@ -95,9 +89,30 @@ def get_glp1_drug_names() -> List[str]:
 # GCS — filter patent_filter() output down to only GLP-1 drugs
 # ─────────────────────────────────────────────
 
+@lru_cache(maxsize=1)
+def _drug_list_names() -> tuple:
+    return tuple(drug_list())
+
+
+def resolve_drug_name(name: str) -> str:
+    """The drug's name exactly as the drug list spells it (lower(cleaned_generic_name)).
+
+    Every output (BigQuery tables, JSON, reports, GCS folders) is written
+    under this one spelling, whatever case / spacing the caller typed. A name
+    that is not in the drug list falls back to its stripped, lower-cased form."""
+    cleaned = str(name or "").strip()
+    for candidate in _drug_list_names():
+        if normalize_drug_str(candidate) == normalize_drug_str(cleaned):
+            return candidate
+    for candidate in _drug_list_names():
+        if normalize(candidate) == normalize(cleaned):
+            return candidate
+    return cleaned.lower()
+
+
 def list_glp1_patent_files() -> Dict[str, List[Dict]]:
     """
-    For every GLP-1 drug returned by get_glp1_drug_names(), lists its patent
+    For every GLP-1 drug returned by drug_list(), lists its patent
     PDFs in GCS via patent_filter() (same fuzzy folder-name matching used
     everywhere else). Drugs with no matching GCS folder (no patents indexed
     yet for that drug) are skipped, not errored.
@@ -106,7 +121,7 @@ def list_glp1_patent_files() -> Dict[str, List[Dict]]:
         {drug_name_lowercase: [{"filename": str, "blob_name": str}, ...]}
         Only drugs with at least one PDF are included.
     """
-    drugs = get_glp1_drug_names()
+    drugs = drug_list()
     if not drugs:
         logger.warning("[DRUG_LIST] GLP-1 query returned no drug names — nothing to list")
         return {}

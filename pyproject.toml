@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ip-refactored"
+version = "1.0.0"
+description = "IP Dimension 1 pipeline: patent blocking analysis, market-entry horizon and LOE tables"
+requires-python = ">=3.10"
+dynamic = ["dependencies"]
+
+[project.scripts]
+run-ip-dimension = "IP_refactored.run_ip_dimension:main"
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+include = ["IP_refactored*"]

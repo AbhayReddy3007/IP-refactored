@@ -15,6 +15,7 @@ Determines whether the claimed feature solves a REAL technical barrier
 Also hosts the EMA EPAR helpers and `_cap_evidence`, which Steps 4 and 5 reuse.
 """
 
+import logging
 import asyncio
 import io
 import random
@@ -30,9 +31,10 @@ from bs4 import BeautifulSoup
 from google.genai import types
 
 from .. import config
-from .. import gcp_utils
-from .step1_claim_classification import _call_gemini_json
+from .. import gcp_utils, gcp_helpers
 from .step2_claim_elements import _format_rows_for_prompt
+
+logger = logging.getLogger(__name__)
 
 gemini_client = gcp_utils.get_gemini_client()
 
@@ -66,7 +68,7 @@ def _load_ema_excel() -> Optional[pd.DataFrame]:
             return None
         page_resp.raise_for_status()
     except Exception as e:
-        print(f"[EMA EXCEL] Failed to fetch page: {e}")
+        logger.warning(f"[EMA EXCEL] Failed to fetch page: {e}")
         return None
 
     soup   = BeautifulSoup(page_resp.text, "html.parser")
@@ -80,7 +82,7 @@ def _load_ema_excel() -> Optional[pd.DataFrame]:
             r"/en/documents/report/medicines-output-medicines-report_en\.xlsx$", re.I
         ))
     if not anchor or not anchor.get("href"):
-        print("[EMA EXCEL] Could not find download link")
+        logger.warning("[EMA EXCEL] Could not find download link")
         return None
 
     try:
@@ -90,7 +92,7 @@ def _load_ema_excel() -> Optional[pd.DataFrame]:
         )
         xls_resp.raise_for_status()
     except Exception as e:
-        print(f"[EMA EXCEL] Download failed: {e}")
+        logger.warning(f"[EMA EXCEL] Download failed: {e}")
         return None
 
     df = pd.read_excel(io.BytesIO(xls_resp.content), engine="openpyxl")
@@ -101,13 +103,13 @@ def _load_ema_excel() -> Optional[pd.DataFrame]:
             header_row_idx = i
             break
     if header_row_idx is None:
-        print("[EMA EXCEL] Could not find header row")
+        logger.warning("[EMA EXCEL] Could not find header row")
         return None
     df.columns = df.iloc[header_row_idx]
     df         = df[header_row_idx + 1:].reset_index(drop=True)
     df.columns = [str(c).strip() for c in df.columns]
     _ema_df_cache = df
-    print(f"[EMA EXCEL] Loaded and cached ({len(df)} medicines)")
+    logger.info(f"[EMA EXCEL] Loaded and cached ({len(df)} medicines)")
     return df
 
 
@@ -155,13 +157,13 @@ def _resolve_all_ema_brands(generic_name: str) -> List[str]:
                             seen.add(matched.lower())
                             brands.append(matched)
     except Exception as e:
-        print(f"[EMA BRANDS] FDA fallback failed: {e}")
+        logger.warning(f"[EMA BRANDS] FDA fallback failed: {e}")
 
     if not brands:
-        print(f"[EMA BRANDS] No brands found for '{generic_name}' — trying name directly")
+        logger.warning(f"[EMA BRANDS] No brands found for '{generic_name}' — trying name directly")
         brands = [generic_name]
     else:
-        print(f"[EMA BRANDS] '{generic_name}' → {brands}")
+        logger.info(f"[EMA BRANDS] '{generic_name}' → {brands}")
     return brands
 
 
@@ -183,7 +185,7 @@ def _get_ema_epar_documents(drug_name: str) -> dict:
         resp = requests.get(drug_page_url, headers=_EMA_HTTP_HEADERS, timeout=60)
         resp.raise_for_status()
     except Exception as e:
-        print(f"[EMA EPAR] Failed to fetch page for '{drug_name}': {e}")
+        logger.warning(f"[EMA EPAR] Failed to fetch page for '{drug_name}': {e}")
         return _EMPTY_EPAR.copy()
 
     soup     = BeautifulSoup(resp.text, "html.parser")
@@ -252,7 +254,7 @@ def _cap_evidence(evidence_block: str, max_chars: int = _MAX_EVIDENCE_CHARS) -> 
     result = "\n\n".join(capped)
     if len(evidence_block) > len(result):
         result += "\n\n[Evidence capped to fit context window — full details available in logs]"
-    print(f"[EVIDENCE CAP] {len(evidence_block):,} chars -> {len(result):,} chars "
+    logger.info(f"[EVIDENCE CAP] {len(evidence_block):,} chars -> {len(result):,} chars "
           f"({len(sections)} section(s))")
     return result
 
@@ -311,16 +313,16 @@ def _pubmed_search(query: str, max_results: int = 5) -> List[str]:
             )
             if r.status_code == 429:
                 wait = (2 ** attempt) + random.uniform(0, 1)
-                print(f"[PUBMED] 429 on '{query}' (attempt {attempt}) — waiting {wait:.1f}s")
+                logger.info(f"[PUBMED] 429 on '{query}' (attempt {attempt}) — waiting {wait:.1f}s")
                 time.sleep(wait)
                 continue
             r.raise_for_status()
             ids = r.json().get("esearchresult", {}).get("idlist", [])
-            print(f"[PUBMED] '{query}' → {len(ids)} result(s)")
+            logger.info(f"[PUBMED] '{query}' → {len(ids)} result(s)")
             return ids
         except Exception as e:
             if attempt == _PUBMED_MAX_RETRIES:
-                print(f"[PUBMED] Search failed for '{query}' after {_PUBMED_MAX_RETRIES} attempts: {e}")
+                logger.warning(f"[PUBMED] Search failed for '{query}' after {_PUBMED_MAX_RETRIES} attempts: {e}")
                 return []
             time.sleep(1)
     return []
@@ -351,14 +353,14 @@ def _pubmed_fetch_abstracts(pmids: List[str]) -> str:
             )
             if r.status_code == 429:
                 wait = (2 ** attempt) + random.uniform(0, 1)
-                print(f"[PUBMED] 429 on fetch (attempt {attempt}) — waiting {wait:.1f}s")
+                logger.info(f"[PUBMED] 429 on fetch (attempt {attempt}) — waiting {wait:.1f}s")
                 time.sleep(wait)
                 continue
             r.raise_for_status()
             return r.text.strip()
         except Exception as e:
             if attempt == _PUBMED_MAX_RETRIES:
-                print(f"[PUBMED] Fetch failed for PMIDs {pmids}: {e}")
+                logger.warning(f"[PUBMED] Fetch failed for PMIDs {pmids}: {e}")
                 return ""
             time.sleep(1)
     return ""
@@ -388,7 +390,7 @@ async def _gather_pubmed_evidence(drug_name: str) -> str:
     if not all_pmids:
         return ""
 
-    print(f"[PUBMED] Fetching {len(all_pmids)} unique abstract(s) for '{drug_name}'")
+    logger.info(f"[PUBMED] Fetching {len(all_pmids)} unique abstract(s) for '{drug_name}'")
     await asyncio.sleep(_PUBMED_DELAY)
     abstracts = await loop.run_in_executor(None, _pubmed_fetch_abstracts, all_pmids[:20])
     return abstracts
@@ -476,11 +478,11 @@ async def _gather_gemini_evidence_angle(
         )
         text = (response.text or "").strip()
         if text:
-            print(f"[GEMINI SEARCH] {label}: {len(text)} chars for '{drug_name}'")
+            logger.info(f"[GEMINI SEARCH] {label}: {len(text)} chars for '{drug_name}'")
             return f"[{label} Evidence — Open Web Search]\n{text}"
         return ""
     except Exception as e:
-        print(f"[GEMINI SEARCH] {label} failed for '{drug_name}': {e}")
+        logger.warning(f"[GEMINI SEARCH] {label} failed for '{drug_name}': {e}")
         return ""
 
 
@@ -505,7 +507,7 @@ async def _gather_all_gemini_evidence(
     parts = []
     for angle, result in zip(_SEARCH_ANGLES, results):
         if isinstance(result, Exception):
-            print(f"[GEMINI SEARCH] {angle['label']} error: {result}")
+            logger.info(f"[GEMINI SEARCH] {angle['label']} error: {result}")
         elif result and str(result).strip():
             parts.append(str(result).strip())
 
@@ -537,7 +539,7 @@ def _get_fda_review_urls(drug_name: str) -> List[Tuple[str, str]]:
         r.raise_for_status()
         results = r.json().get("results", []) or []
     except Exception as e:
-        print(f"[FDA REVIEW] API request failed for '{drug_name}': {e}")
+        logger.warning(f"[FDA REVIEW] API request failed for '{drug_name}': {e}")
         return []
 
     # Track single latest Label and single latest Review across all NDAs
@@ -564,17 +566,17 @@ def _get_fda_review_urls(drug_name: str) -> List[Tuple[str, str]]:
 
                 if doc_url and doc_date > latest_docs[key]["date"]:
                     latest_docs[key] = {"date": doc_date, "url": doc_url}
-                    print(f"[FDA REVIEW] Latest {key} so far: {doc_date} | {doc_url[:80]}")
+                    logger.info(f"[FDA REVIEW] Latest {key} so far: {doc_date} | {doc_url[:80]}")
 
     result = []
     for key in ("Label", "Review"):
         url = latest_docs[key]["url"]
         if url:
-            print(f"[FDA REVIEW] Using latest {key}: {url[:80]}")
+            logger.info(f"[FDA REVIEW] Using latest {key}: {url[:80]}")
             result.append((key, url))
 
     if not result:
-        print(f"[FDA REVIEW] No Label or Review PDFs found for '{drug_name}'")
+        logger.warning(f"[FDA REVIEW] No Label or Review PDFs found for '{drug_name}'")
 
     return result
 
@@ -607,10 +609,10 @@ async def _analyse_fda_review_pdf(pdf_url: str, doc_type: str, drug_name: str, c
             ),
         )
         text = response.text or ""
-        print(f"[FDA REVIEW] Extracted {len(text)} chars from {doc_type}")
+        logger.info(f"[FDA REVIEW] Extracted {len(text)} chars from {doc_type}")
         return f"[FDA {doc_type}]\n{text.strip()}"
     except Exception as e:
-        print(f"[FDA REVIEW] Gemini analysis failed for {doc_type}: {e}")
+        logger.warning(f"[FDA REVIEW] Gemini analysis failed for {doc_type}: {e}")
         return ""
 
 
@@ -620,7 +622,7 @@ async def _gather_fda_evidence(drug_name: str, claim_reason: str) -> str:
     review_urls = await loop.run_in_executor(None, _get_fda_review_urls, drug_name)
 
     if not review_urls:
-        print(f"[FDA REVIEW] No review PDFs found for '{drug_name}'")
+        logger.warning(f"[FDA REVIEW] No review PDFs found for '{drug_name}'")
         return ""
 
     results = await asyncio.gather(
@@ -632,7 +634,7 @@ async def _gather_fda_evidence(drug_name: str, claim_reason: str) -> str:
     parts = []
     for r in results:
         if isinstance(r, Exception):
-            print(f"[FDA REVIEW] Error: {r}")
+            logger.info(f"[FDA REVIEW] Error: {r}")
         elif r:
             parts.append(r)
 
@@ -684,10 +686,10 @@ async def _analyse_ema_pdf(pdf_url: str, doc_type: str, drug_name: str, claim_re
             ),
         )
         text = (response.text or "").strip()
-        print(f"[EMA EPAR] Extracted {len(text)} chars from {doc_type} for '{drug_name}'")
+        logger.info(f"[EMA EPAR] Extracted {len(text)} chars from {doc_type} for '{drug_name}'")
         return f"[EMA EPAR — {doc_type}]\n{text}"
     except Exception as e:
-        print(f"[EMA EPAR] Gemini failed for {doc_type} ({pdf_url[:60]}): {e}")
+        logger.warning(f"[EMA EPAR] Gemini failed for {doc_type} ({pdf_url[:60]}): {e}")
         return ""
 
 
@@ -703,14 +705,14 @@ async def _gather_ema_evidence(drug_name: str, claim_reason: str) -> str:
     loop = asyncio.get_event_loop()
 
     # Step 1 — resolve all EMA brand names
-    print(f"[EMA EPAR] Resolving EMA brands for '{drug_name}'...")
+    logger.info(f"[EMA EPAR] Resolving EMA brands for '{drug_name}'...")
     brands = await loop.run_in_executor(None, _resolve_all_ema_brands, drug_name)
 
     if not brands:
-        print(f"[EMA EPAR] No EMA brands found for '{drug_name}' — skipping")
+        logger.warning(f"[EMA EPAR] No EMA brands found for '{drug_name}' — skipping")
         return ""
 
-    print(f"[EMA EPAR] Found {len(brands)} brand(s): {brands}")
+    logger.info(f"[EMA EPAR] Found {len(brands)} brand(s): {brands}")
 
     # Step 2 — collect EPAR PDF URLs (deduplicated)
     seen_urls: set = set()
@@ -720,7 +722,7 @@ async def _gather_ema_evidence(drug_name: str, claim_reason: str) -> str:
         try:
             links = await loop.run_in_executor(None, _get_ema_epar_documents, brand)
         except Exception as e:
-            print(f"[EMA EPAR] Failed to get EPAR docs for '{brand}': {e}")
+            logger.warning(f"[EMA EPAR] Failed to get EPAR docs for '{brand}': {e}")
             continue
 
         for key in _EMA_EPAR_PREFERENCE:
@@ -728,15 +730,15 @@ async def _gather_ema_evidence(drug_name: str, claim_reason: str) -> str:
             if url and url not in seen_urls:
                 seen_urls.add(url)
                 pdf_tasks.append((key, url))
-                print(f"[EMA EPAR] '{brand}' → {key}: {url[:80]}")
+                logger.info(f"[EMA EPAR] '{brand}' → {key}: {url[:80]}")
                 break  # one PDF per brand
 
     if not pdf_tasks:
-        print(f"[EMA EPAR] No EPAR PDFs found for any brand of '{drug_name}'")
+        logger.warning(f"[EMA EPAR] No EPAR PDFs found for any brand of '{drug_name}'")
         return ""
 
     # Step 3 — send each PDF to Gemini in parallel
-    print(f"[EMA EPAR] Analysing {len(pdf_tasks)} EPAR PDF(s) for '{drug_name}'...")
+    logger.info(f"[EMA EPAR] Analysing {len(pdf_tasks)} EPAR PDF(s) for '{drug_name}'...")
     results = await asyncio.gather(
         *[_analyse_ema_pdf(url, doc_type, drug_name, claim_reason)
           for doc_type, url in pdf_tasks],
@@ -746,7 +748,7 @@ async def _gather_ema_evidence(drug_name: str, claim_reason: str) -> str:
     parts = []
     for r in results:
         if isinstance(r, Exception):
-            print(f"[EMA EPAR] Error: {r}")
+            logger.info(f"[EMA EPAR] Error: {r}")
         elif r and str(r).strip():
             parts.append(str(r).strip())
 
@@ -787,16 +789,16 @@ def _europepmc_search(query: str, max_results: int = 5) -> List[Dict]:
             )
             if r.status_code == 429:
                 wait = (2 ** attempt) + random.uniform(0, 1)
-                print(f"[EUROPEPMC] 429 on '{query}' (attempt {attempt}) — waiting {wait:.1f}s")
+                logger.info(f"[EUROPEPMC] 429 on '{query}' (attempt {attempt}) — waiting {wait:.1f}s")
                 time.sleep(wait)
                 continue
             r.raise_for_status()
             articles = r.json().get("resultList", {}).get("result", []) or []
-            print(f"[EUROPEPMC] '{query}' → {len(articles)} result(s)")
+            logger.info(f"[EUROPEPMC] '{query}' → {len(articles)} result(s)")
             return articles
         except Exception as e:
             if attempt == _EUROPEPMC_RETRIES:
-                print(f"[EUROPEPMC] Search failed for '{query}': {e}")
+                logger.warning(f"[EUROPEPMC] Search failed for '{query}': {e}")
                 return []
             time.sleep(1)
     return []
@@ -848,10 +850,10 @@ async def _gather_europepmc_evidence(drug_name: str) -> str:
         await asyncio.sleep(_EUROPEPMC_DELAY)
 
     if not all_articles:
-        print(f"[EUROPEPMC] No articles found for '{drug_name}'")
+        logger.warning(f"[EUROPEPMC] No articles found for '{drug_name}'")
         return ""
 
-    print(f"[EUROPEPMC] {len(all_articles)} unique article(s) for '{drug_name}'")
+    logger.info(f"[EUROPEPMC] {len(all_articles)} unique article(s) for '{drug_name}'")
     formatted = _europepmc_format_results(all_articles[:15])
     return f"[Europe PMC Evidence]\n{formatted}" if formatted else ""
 
@@ -864,7 +866,7 @@ def _get_completed_rows(drug_rows: List[Dict]) -> List[Dict]:
         r for r in drug_rows
         if str(r.get("Status", "")).strip().lower() == "completed"
     ]
-    print(f"[STEP 3] {len(completed)} completed trial row(s) out of {len(drug_rows)} total")
+    logger.info(f"[STEP 3] {len(completed)} completed trial row(s) out of {len(drug_rows)} total")
     return completed
 
 
@@ -985,7 +987,7 @@ async def _run_step3(
     Returns:
         Parsed JSON dict or None on Gemini failure.
     """
-    print(f"[STEP 3] Scientific barrier analysis for {filename}...")
+    logger.info(f"[STEP 3] Scientific barrier analysis for {filename}...")
 
     jurisdiction  = (step1_result.get("jurisdiction") or "").upper()
     phase         = drug_phase.get(jurisdiction) or drug_phase.get("US") or drug_phase.get("EP")
@@ -994,13 +996,13 @@ async def _run_step3(
     matched_elems = step2_result.get("matched_elements") or []
     is_marketed   = (phase or "").lower() == "marketed"
 
-    print(f"[STEP 3] {filename} — Phase: {phase} | Marketed: {is_marketed}")
+    logger.info(f"[STEP 3] {filename} — Phase: {phase} | Marketed: {is_marketed}")
 
     # ── Gather evidence in parallel ───────────────────────────────────────────
     evidence_parts: List[str] = []
 
     if is_marketed:
-        print(f"[STEP 3] Marketed drug — fetching FDA reviews, EMA assessment, Europe PMC, open web search...")
+        logger.info("[STEP 3] Marketed drug — fetching FDA reviews, EMA assessment, Europe PMC, open web search...")
         fda_ev, ema_ev, epmc_ev, gem_ev = await asyncio.gather(
             _gather_fda_evidence(drug_name, claim_reason),
             _gather_ema_evidence(drug_name, claim_reason),
@@ -1016,12 +1018,12 @@ async def _run_step3(
             ("Open Web Search",  gem_ev),
         ]:
             if isinstance(ev, Exception):
-                print(f"[STEP 3] {label} evidence error: {ev}")
+                logger.info(f"[STEP 3] {label} evidence error: {ev}")
             elif ev and str(ev).strip():
                 evidence_parts.append(str(ev).strip())
 
     else:
-        print(f"[STEP 3] Clinical drug — fetching PubMed, Europe PMC, open web search...")
+        logger.info("[STEP 3] Clinical drug — fetching PubMed, Europe PMC, open web search...")
         pubmed_ev, epmc_ev, gem_ev = await asyncio.gather(
             _gather_pubmed_evidence(drug_name),
             _gather_europepmc_evidence(drug_name),
@@ -1035,7 +1037,7 @@ async def _run_step3(
             ("Open Web Search",  gem_ev),
         ]:
             if isinstance(ev, Exception):
-                print(f"[STEP 3] {label} evidence error: {ev}")
+                logger.info(f"[STEP 3] {label} evidence error: {ev}")
             elif ev and str(ev).strip():
                 evidence_parts.append(f"[{label} Evidence]\n{str(ev).strip()}")
 
@@ -1067,7 +1069,7 @@ async def _run_step3(
         context         = safe_context,
     )
 
-    result = await _call_gemini_json(prompt, filename, "STEP3")
+    result = await gcp_helpers.call_gemini_json(prompt, filename, "STEP3")
     if result is None:
         return None
 
@@ -1082,7 +1084,7 @@ async def _run_step3(
     # Only high confidence passes as a real technical barrier.
     # medium/low → force NON-BLOCKING regardless of is_technical_barrier value.
     if result["is_technical_barrier"] and result["confidence"] != "high":
-        print(
+        logger.info(
             f"[STEP 3] {filename} → Confidence gate: "
             f"is_technical_barrier=True but confidence={result['confidence']} "
             f"→ overriding to False (insufficient evidence strength)"
@@ -1094,7 +1096,7 @@ async def _run_step3(
         )
 
     verdict = "CONTINUE → Step 4" if result["is_technical_barrier"] else "NON-BLOCKING"
-    print(
+    logger.info(
         f"[STEP 3] {filename}\n"
         f"  Barrier     : {result['is_technical_barrier']} ({result['confidence']} confidence)\n"
         f"  Evidence    : {result['evidence_type']}\n"

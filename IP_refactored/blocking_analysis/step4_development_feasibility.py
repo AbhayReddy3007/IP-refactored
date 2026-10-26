@@ -12,11 +12,14 @@ Reuses the evidence block gathered in Step 3 (no new fetching).
   is_blocking_indicator = False → NON-BLOCKING
 """
 
+import logging
 from pathlib import Path
 from typing import Dict, Optional
 
-from .step1_claim_classification import _call_gemini_json
+from .. import gcp_helpers
 from .step3_scientific_barrier import _cap_evidence
+
+logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────
@@ -196,7 +199,7 @@ async def _run_step4(
         phase = drug_phase.get("US") or drug_phase.get("EP")
 
     is_marketed = (phase or "").lower() == "marketed"
-    print(f"[STEP 4] {filename} — Phase: {phase} | Marketed: {is_marketed}")
+    logger.info(f"[STEP 4] {filename} — Phase: {phase} | Marketed: {is_marketed}")
 
     safe_context  = context.replace("{", "{{").replace("}", "}}")
     safe_evidence = _cap_evidence(evidence_block).replace("{", "{{").replace("}", "}}")
@@ -223,7 +226,7 @@ async def _run_step4(
             context        = safe_context,
         )
 
-    result = await _call_gemini_json(prompt, filename, "STEP4")
+    result = await gcp_helpers.call_gemini_json(prompt, filename, "STEP4")
     if result is None:
         return None
 
@@ -234,7 +237,7 @@ async def _run_step4(
 
     # Confidence gate — only high confidence passes as blocking indicator
     if result["is_blocking_indicator"] and result["confidence"] != "high":
-        print(
+        logger.info(
             f"[STEP 4] {filename} → Confidence gate: "
             f"is_blocking_indicator=True but confidence={result['confidence']} "
             f"→ overriding to False"
@@ -246,7 +249,7 @@ async def _run_step4(
         )
 
     verdict = "BLOCKING INDICATOR" if result["is_blocking_indicator"] else "NON-BLOCKING"
-    print(
+    logger.info(
         f"[STEP 4] {filename}\n"
         f"  Blocking Indicator : {result['is_blocking_indicator']} ({result['confidence']} confidence)\n"
         f"  Reason             : {result.get('reason', '')[:120]}\n"

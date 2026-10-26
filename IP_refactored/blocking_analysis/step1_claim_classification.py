@@ -3,25 +3,18 @@ step1_claim_classification.py
 ─────────────────────────────
 STEP 1 — Classify the patent's primary claim into one of 7 categories.
 
-  Composition of Matter → orchestrator applies primary-CoM routing (BLOCKING)
+  Composition of Matter → blocking_analysis.py applies primary-CoM routing (BLOCKING)
   Anything else         → continues to Step 2
 
-Also hosts `_call_gemini_json`, the shared Gemini JSON-mode helper that
-Steps 2-5 import from here.
+Gemini is called through gcp_helpers.call_gemini_json(), shared by Steps 1-5.
 """
 
-import asyncio
-import json
-import random
-import re
+import logging
 from typing import Dict, Optional
 
-from google.genai import types
+from .. import gcp_helpers
 
-from .. import config
-from .. import gcp_utils
-
-gemini_client = gcp_utils.get_gemini_client()
+logger = logging.getLogger(__name__)
 
 # All 7 claim categories used across all steps
 CLAIM_CATEGORIES = [
@@ -33,92 +26,6 @@ CLAIM_CATEGORIES = [
     "Device",
     "Dosage Regimen",
 ]
-
-
-# ─────────────────────────────────────────────
-# Gemini call helper (shared by all steps)
-# ─────────────────────────────────────────────
-
-async def _call_gemini_json(prompt: str, filename: str, step: str) -> Optional[Dict]:
-    """
-    Calls Gemini 2.5 Flash with JSON response mode.
-    Retries up to config.MAX_ANALYSIS_RETRIES times (see config.py) on truncation or empty response.
-    On truncation retry, appends a concise-output instruction to reduce token usage.
-    Used by every step in the pipeline.
-    """
-    _CONCISE_SUFFIX = (
-        "\n\nIMPORTANT: Your previous response was truncated. "
-        "Return ONLY the JSON object. Keep every string field under 60 words. "
-        "Do NOT include any explanation outside the JSON."
-    )
-
-    for attempt in range(1, config.MAX_ANALYSIS_RETRIES + 1):
-        try:
-            # On retry after truncation, ask for a more concise response
-            current_prompt = prompt if attempt == 1 else prompt + _CONCISE_SUFFIX
-
-            response = await gemini_client.aio.models.generate_content(
-                model=config.GEMINI_TEXT_MODEL,
-                contents=current_prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.1,
-                    max_output_tokens=8192,
-                ),
-            )
-
-            raw_text = response.text if response.text else ""
-
-            try:
-                finish_str = str(response.candidates[0].finish_reason)
-                print(f"[{step}] finish_reason for {filename} (attempt {attempt}): {finish_str}")
-                if finish_str in ("MAX_TOKENS", "2"):
-                    print(f"[WARNING] Response truncated for {filename} (attempt {attempt}) — retrying with concise prompt")
-                    if attempt < config.MAX_ANALYSIS_RETRIES:
-                        await asyncio.sleep(2 + random.uniform(0, 1))
-                        continue
-                elif finish_str in ("SAFETY", "3"):
-                    print(f"[ERROR] Safety filter blocked response for {filename}.")
-                    return None
-            except (IndexError, AttributeError):
-                pass
-
-            if not raw_text.strip():
-                print(f"[ERROR] Empty response for {filename} (attempt {attempt})")
-                if attempt < config.MAX_ANALYSIS_RETRIES:
-                    await asyncio.sleep(2)
-                    continue
-                return None
-
-            clean = raw_text.strip()
-            if "```" in clean:
-                clean = re.sub(r"```(?:json)?", "", clean).replace("```", "").strip()
-
-            # Catch unterminated JSON before trying to parse — sign of silent truncation
-            if clean and not clean.rstrip().endswith("}"):
-                print(f"[WARNING] Response appears truncated (no closing brace) for {filename} (attempt {attempt})")
-                if attempt < config.MAX_ANALYSIS_RETRIES:
-                    await asyncio.sleep(2 + random.uniform(0, 1))
-                    continue
-
-            print(f"[{step}] Raw response for {filename}: {clean[:300]!r}")
-            return json.loads(clean)
-
-        except json.JSONDecodeError as e:
-            print(f"[ERROR] JSON parse failed for {filename} (attempt {attempt}): {e}")
-            if attempt < config.MAX_ANALYSIS_RETRIES:
-                await asyncio.sleep(2)
-                continue
-            return None
-
-        except Exception as e:
-            print(f"[ERROR] Gemini call failed for {filename} (attempt {attempt}): {e}")
-            if attempt < config.MAX_ANALYSIS_RETRIES:
-                await asyncio.sleep(2)
-                continue
-            return None
-
-    return None
 
 
 # ─────────────────────────────────────────────
@@ -276,7 +183,7 @@ async def _run_step1(
     Step 1: Classify the patent's primary claim into one of 7 categories.
     Returns the parsed JSON dict, or None on failure.
     """
-    print(f"[STEP 1] Classifying claim for {filename}...")
+    logger.info(f"[STEP 1] Classifying claim for {filename}...")
 
     safe_context = context.replace("{", "{{").replace("}", "}}")
     prompt = STEP1_PROMPT.format(
@@ -286,7 +193,7 @@ async def _run_step1(
         context            = safe_context,
     )
 
-    result = await _call_gemini_json(prompt, filename, "STEP1")
+    result = await gcp_helpers.call_gemini_json(prompt, filename, "STEP1")
     if result is None:
         return None
 
@@ -297,7 +204,7 @@ async def _run_step1(
         None,
     )
     if not matched:
-        print(f"[STEP 1] Unrecognised category '{raw_category}' for {filename} — defaulting to None")
+        logger.info(f"[STEP 1] Unrecognised category '{raw_category}' for {filename} — defaulting to None")
     result["claim_category"] = matched
 
     # Enforce consistency: category and flag must agree
@@ -306,7 +213,7 @@ async def _run_step1(
     else:
         result["is_composition_of_matter"] = False
 
-    print(
+    logger.info(
         f"[STEP 1] {filename} → "
         f"Category: {result['claim_category']} | "
         f"CoM: {result['is_composition_of_matter']} | "

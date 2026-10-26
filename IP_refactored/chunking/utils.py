@@ -1,68 +1,30 @@
 """
 utils.py
 ────────
-Shared helper functions used by more than one module inside chunking/
-(patent_filter.py, indexer.py, alloydb_client.py).
-
-Nothing here talks to Google Cloud — pure, dependency-free logic only.
-GCP operations belong in IP_refactored/gcp_utils.py.
+Helpers specific to the chunking sub-package (indexer.py, alloydb_client.py).
+Package-wide helpers (normalize, safe_name, extract_jurisdiction, ...) live
+in IP_refactored/utils.py.
 """
 
 import re
+import time
 from datetime import datetime
 from typing import List, Optional
 
 
-# ─────────────────────────────────────────────
-# Name normalisation — used by patent_filter.py (folder matching) and
-# indexer.py (AlloyDB collection naming).
-# ─────────────────────────────────────────────
-
-def normalize(name: str) -> str:
-    """Lowercase, strip, collapse spaces/hyphens/underscores for fuzzy matching."""
-    return re.sub(r"[\s\-_]+", "", str(name or "").lower().strip())
-
-
-def normalize_patent_number(value: str) -> str:
-    """Strip everything but letters/digits and uppercase, for matching a
-    BigQuery patent_number against a GCS filename stem regardless of
-    punctuation/casing conventions (e.g. 'US-1,234,567-B2' == 'US1234567B2.pdf')."""
-    return re.sub(r"[^A-Za-z0-9]", "", str(value or "")).upper()
-
-
-def safe_name(drug_name: str, lowercase: bool = False) -> str:
-    """GCS / filesystem-safe drug name.
-
-    Preserves the canonical drug name as closely as possible (including
-    the '+' used in combination drugs, e.g. "Cagrilintide+Semaglutide").
-    Only characters that are genuinely unsafe in GCS paths / filesystems
-    are replaced: / \\ < > : " | ? * and null bytes.
-    """
-    s = str(drug_name or "").strip()
-    s = re.sub(r'[/\\<>:"|?*\x00]', "_", s)
-    s = re.sub(r"_+", "_", s)
-    s = s.strip("_")
-    if lowercase:
-        s = s.lower()
-    return s
+def fmt_elapsed(start: float) -> str:
+    """Seconds since *start* (a time.monotonic() value), e.g. '3.2s' — every
+    indexing step logs how long it took so a stuck step is visible."""
+    return f"{time.monotonic() - start:.1f}s"
 
 
 def safe_collection_name(drug_name: str) -> str:
-    """Strict alphanumeric-safe name for AlloyDB collection identifiers.
-
-    Replaces every character that is NOT alphanumeric, underscore, or
-    hyphen with '_'.
-    """
+    """Strict alphanumeric-safe name for AlloyDB collection identifiers."""
     s = str(drug_name or "").strip()
     s = re.sub(r"[^a-zA-Z0-9_-]", "_", s)
     s = re.sub(r"[_-]{2,}", "_", s)
-    s = s.strip("_-")
-    return s
+    return s.strip("_-")
 
-
-# ─────────────────────────────────────────────
-# Text chunking — used by indexer.py
-# ─────────────────────────────────────────────
 
 def chunk_text(text: str, chunk_size: int, overlap: int) -> List[str]:
     """Split *text* into overlapping chunks, breaking on sentence/paragraph
@@ -86,16 +48,8 @@ def chunk_text(text: str, chunk_size: int, overlap: int) -> List[str]:
     return chunks
 
 
-# ─────────────────────────────────────────────
-# Date cleaning — used by indexer.py (filing / grant date extraction)
-# ─────────────────────────────────────────────
-
 def clean_date(val) -> Optional[str]:
-    """Normalise a date value returned by Gemini into YYYY-MM-DD (or None).
-
-    Handles common quirks: string "null"/"None"/"N/A", already-ISO dates,
-    and a handful of common non-ISO formats salvaged via strptime.
-    """
+    """Normalise a date value returned by Gemini into YYYY-MM-DD (or None)."""
     if val is None or not isinstance(val, str):
         return None
 
@@ -117,20 +71,3 @@ def clean_date(val) -> Optional[str]:
             continue
 
     return None
-
-
-def has_valid_dates(meta: dict) -> bool:
-    """True if a metadata dict has at least one non-empty filing/grant date."""
-    filing = meta.get("filing_date", "")
-    grant = meta.get("grant_date", "")
-    return bool(filing and filing not in ("", "null", "None")) or \
-        bool(grant and grant not in ("", "null", "None"))
-
-
-def extract_jurisdiction(patent_number_hint: str) -> str:
-    """Best-effort 2-letter jurisdiction code from a patent number / filename stem."""
-    match = re.search(r"\b([A-Z]{2})\d", patent_number_hint.upper())
-    if match:
-        return match.group(1)
-    fallback = re.match(r"^([A-Z]{2})", patent_number_hint.upper())
-    return fallback.group(1) if fallback else "UN"

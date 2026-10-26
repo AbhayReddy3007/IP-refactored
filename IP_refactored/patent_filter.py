@@ -5,7 +5,7 @@ Lists patent PDF filenames from GCS for a given drug name, restricted to
 patents BigQuery's patent_master table (config.PATENT_MASTER_TABLE) marks
 as approved: patent_status = 'PDF Downloaded' and confidence > 0.3. A PDF
 sitting in GCS that isn't approved for this molecule in patent_master is
-excluded — so indexing, blocking analysis, and the Excel output downstream
+excluded — so indexing, blocking analysis, and the output tables downstream
 all only ever see this approved set. No downloading here — metadata only.
 
 All GCS/BigQuery access goes through IP_refactored.gcp_utils; all
@@ -13,7 +13,7 @@ configuration (bucket name, patents prefix, patent_master table) comes
 from IP_refactored.config.
 
 Usage:
-    from IP_refactored.chunking.patent_filter import patent_filter, get_approved_patent_numbers
+    from IP_refactored.patent_filter import patent_filter, get_approved_patent_numbers
 
     refs = patent_filter("BGM-0504")
     # -> [{"filename": "US1234567.pdf", "blob_name": "patents/BGM-0504/US1234567.pdf"}, ...]
@@ -28,8 +28,8 @@ from typing import Dict, List, Optional
 
 from google.cloud import bigquery
 
-from .. import config
-from .. import gcp_utils
+from . import config
+from . import gcp_utils
 from .utils import normalize, normalize_patent_number
 
 logger = logging.getLogger(__name__)
@@ -45,17 +45,17 @@ else:
 
 PATENT_MASTER_QUERY_BY_MOLECULE = """
 SELECT patent_number
-FROM `{table}`
+FROM `{{table}}`
 WHERE lower(molecule_name) = @molecule_name
-AND patent_status = 'PDF Downloaded'
-AND confidence > 0.3
+AND patent_status = '{status}'
+AND confidence > {threshold}
 """
 
 PATENT_MASTER_QUERY_ALL = """
 SELECT patent_number
-FROM `{table}`
-WHERE patent_status = 'PDF Downloaded'
-AND confidence > 0.3
+FROM `{{table}}`
+WHERE patent_status = '{status}'
+AND confidence > {threshold}
 """
 
 
@@ -81,8 +81,9 @@ def get_approved_patent_numbers(molecule_name: Optional[str] = None) -> List[str
 
     try:
         client = gcp_utils.get_bq_client()
+        _q_kwargs = dict(status=config.PATENT_STATUS_FILTER, threshold=config.PATENT_CONFIDENCE_THRESHOLD)
         if molecule_name:
-            query = PATENT_MASTER_QUERY_BY_MOLECULE.format(table=config.PATENT_MASTER_TABLE)
+            query = PATENT_MASTER_QUERY_BY_MOLECULE.format(table=config.PATENT_MASTER_TABLE, **_q_kwargs)
             job_config = bigquery.QueryJobConfig(
                 query_parameters=[
                     bigquery.ScalarQueryParameter("molecule_name", "STRING", molecule_name.strip().lower()),
@@ -91,7 +92,7 @@ def get_approved_patent_numbers(molecule_name: Optional[str] = None) -> List[str
             logger.info("[PATENT_FILTER] Querying %s for molecule '%s'...", config.PATENT_MASTER_TABLE, molecule_name)
             rows = client.query(query, job_config=job_config).result()
         else:
-            query = PATENT_MASTER_QUERY_ALL.format(table=config.PATENT_MASTER_TABLE)
+            query = PATENT_MASTER_QUERY_ALL.format(table=config.PATENT_MASTER_TABLE, **_q_kwargs)
             logger.info("[PATENT_FILTER] Querying %s for ALL molecules...", config.PATENT_MASTER_TABLE)
             rows = client.query(query).result()
 
@@ -242,8 +243,8 @@ if __name__ == "__main__":
     import sys
     logging.basicConfig(level=logging.INFO)
     if len(sys.argv) < 2:
-        print("Usage: python -m IP_refactored.chunking.patent_filter <drug_name>")
-        print("       python -m IP_refactored.chunking.patent_filter --all   (approved patent numbers, every molecule)")
+        print("Usage: python -m IP_refactored.patent_filter <drug_name>")
+        print("       python -m IP_refactored.patent_filter --all   (approved patent numbers, every molecule)")
         sys.exit(1)
     if sys.argv[1] == "--all":
         for pn in get_approved_patent_numbers():

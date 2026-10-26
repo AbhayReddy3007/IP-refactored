@@ -15,13 +15,16 @@ The Excel is loaded once at startup (`load_formulation_excel`) and cached in
 memory. Drug rows are matched on the Molecule column (case-insensitive).
 """
 
+import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import pandas as pd
 
 from .. import config
-from .step1_claim_classification import _call_gemini_json
+from .. import gcp_helpers
+
+logger = logging.getLogger(__name__)
 
 
 # The 5 Step 2 columns we care about from the Excel
@@ -54,7 +57,7 @@ def load_formulation_excel(path: Optional[str] = None) -> None:
 
     excel_path = path or config.FORMULATION_EXCEL_PATH
     if not excel_path:
-        print("[FORMULATION EXCEL] WARNING: No path provided and "
+        logger.warning("[FORMULATION EXCEL] WARNING: No path provided and "
               "FORMULATION_EXCEL_PATH not set — Step 2 will run without Excel data.")
         return
 
@@ -62,10 +65,10 @@ def load_formulation_excel(path: Optional[str] = None) -> None:
         _FORMULATION_DF = pd.read_excel(excel_path, dtype=str)
         # Normalise column names: strip whitespace
         _FORMULATION_DF.columns = _FORMULATION_DF.columns.str.strip()
-        print(f"[FORMULATION EXCEL] Loaded {len(_FORMULATION_DF)} rows from: {excel_path}")
-        print(f"[FORMULATION EXCEL] Columns: {list(_FORMULATION_DF.columns)}")
+        logger.info(f"[FORMULATION EXCEL] Loaded {len(_FORMULATION_DF)} rows from: {excel_path}")
+        logger.info(f"[FORMULATION EXCEL] Columns: {list(_FORMULATION_DF.columns)}")
     except Exception as e:
-        print(f"[FORMULATION EXCEL] ERROR loading '{excel_path}': {e}")
+        logger.error(f"[FORMULATION EXCEL] ERROR loading '{excel_path}': {e}")
         _FORMULATION_DF = None
 
 
@@ -83,17 +86,17 @@ def get_drug_rows(drug_name: str) -> List[Dict]:
         return []
 
     if "Molecule" not in _FORMULATION_DF.columns:
-        print("[FORMULATION EXCEL] WARNING: 'Molecule' column not found in Excel.")
+        logger.warning("[FORMULATION EXCEL] WARNING: 'Molecule' column not found in Excel.")
         return []
 
     mask = _FORMULATION_DF["Molecule"].str.strip().str.lower() == drug_name.strip().lower()
     matched = _FORMULATION_DF[mask]
 
     if matched.empty:
-        print(f"[FORMULATION EXCEL] No rows found for drug: '{drug_name}'")
+        logger.warning(f"[FORMULATION EXCEL] No rows found for drug: '{drug_name}'")
         return []
 
-    print(f"[FORMULATION EXCEL] Found {len(matched)} row(s) for '{drug_name}'")
+    logger.info(f"[FORMULATION EXCEL] Found {len(matched)} row(s) for '{drug_name}'")
 
     # Keep context columns + the 5 Step 2 columns
     keep_cols = ["Trial ID", "Phase"] + _STEP2_COLUMNS
@@ -284,7 +287,7 @@ async def _run_step2(
         Parsed JSON dict with elements_present, any_element_present, matched_elements, reason.
         Returns None on Gemini failure.
     """
-    print(f"[STEP 2] Checking claim elements for {filename} "
+    logger.info(f"[STEP 2] Checking claim elements for {filename} "
           f"({len(drug_rows)} formulation record(s))...")
 
     formatted_rows = _format_rows_for_prompt(drug_rows)
@@ -300,7 +303,7 @@ async def _run_step2(
         context        = safe_context,
     )
 
-    result = await _call_gemini_json(prompt, filename, "STEP2")
+    result = await gcp_helpers.call_gemini_json(prompt, filename, "STEP2")
     if result is None:
         return None
 
@@ -313,7 +316,7 @@ async def _run_step2(
     match_count = len(matched)
     result["any_element_present"] = match_count >= 1
 
-    print(
+    logger.info(
         f"[STEP 2] {filename}\n"
         f"  Matched ({match_count}) : {matched}\n"
         f"  Pass gate  : {result['any_element_present']}\n"

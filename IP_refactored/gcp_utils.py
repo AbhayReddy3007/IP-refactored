@@ -26,7 +26,7 @@ from .config import (
     DIM_SCORES_TABLE,
     GCS_BUCKET,
     GCS_CACHE_PREFIX,
-    GCS_MEDICAL_POTENTIAL_SUBFOLDER,
+    GCS_IP_SUBFOLDER,
     GCS_PIPELINE_CACHE_BASE_PATH,
     GCS_REPORT_BASE_PATH,
     GOOGLE_API_KEY,
@@ -35,7 +35,7 @@ from .config import (
 )
 
 logger = logging.getLogger(__name__)
-PILLAR_SUBFOLDER = GCS_MEDICAL_POTENTIAL_SUBFOLDER
+PILLAR_SUBFOLDER = GCS_IP_SUBFOLDER
 
 
 # ─────────────────────────────────────────────
@@ -300,12 +300,12 @@ def upload_dimension_payload_cache_to_gcs(
     """
     try:
         molecule = (molecule_name or "").strip()
-        pillar = (GCS_MEDICAL_POTENTIAL_SUBFOLDER or "").strip()
+        pillar = (GCS_IP_SUBFOLDER or "").strip()
         dimension = (dimension_name or "").strip()
         if not molecule:
             raise ValueError("molecule_name must be provided")
         if not pillar:
-            raise ValueError("GCS_MEDICAL_POTENTIAL_SUBFOLDER must be configured")
+            raise ValueError("GCS_IP_SUBFOLDER must be configured")
         if not dimension:
             raise ValueError("dimension_name must be provided")
 
@@ -345,7 +345,7 @@ def upload_dimension_payload_cache_to_gcs(
         logger.warning(
             "[CACHE_UPLOAD] Failed to upload final payload to GCS for molecule '%s', pillar '%s', dimension '%s': %s",
             molecule_name,
-            GCS_MEDICAL_POTENTIAL_SUBFOLDER,
+            GCS_IP_SUBFOLDER,
             dimension_name,
             exc,
         )

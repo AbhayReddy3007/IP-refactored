@@ -12,11 +12,14 @@ A patent is BLOCKING only if all four hold:
 Only a HIGH-confidence BLOCKING verdict is kept; anything else → NON-BLOCKING.
 """
 
+import logging
 from pathlib import Path
 from typing import Dict, Optional
 
-from .step1_claim_classification import _call_gemini_json
+from .. import gcp_helpers
 from .step3_scientific_barrier import _cap_evidence
+
+logger = logging.getLogger(__name__)
 
 
 STEP5_PROMPT = """You are a senior pharmaceutical patent expert making a FINAL blocking classification.
@@ -179,7 +182,7 @@ async def _run_step5(
         context        = safe_context,
     )
 
-    result = await _call_gemini_json(prompt, filename, "STEP5")
+    result = await gcp_helpers.call_gemini_json(prompt, filename, "STEP5")
     if result is None:
         return None
 
@@ -191,7 +194,7 @@ async def _run_step5(
 
     # Confidence gate — only high confidence can yield BLOCKING
     if result["final_tag"] == "BLOCKING" and result["confidence"] != "high":
-        print(
+        logger.info(
             f"[STEP 5] {filename} → Confidence gate: "
             f"final_tag=BLOCKING but confidence={result['confidence']} "
             f"→ overriding to NON-BLOCKING"
@@ -202,7 +205,7 @@ async def _run_step5(
             + (result.get("reason") or "")
         )
 
-    print(
+    logger.info(
         f"[STEP 5] {filename}\n"
         f"  Novel & Difficult : {result['is_novel_and_difficult']}\n"
         f"  Novelty Signal    : {result.get('novelty_signal', '')}\n"

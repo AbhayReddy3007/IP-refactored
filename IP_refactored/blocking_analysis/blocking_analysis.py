@@ -1,6 +1,6 @@
 """
-orchestrator.py
-───────────────
+blocking_analysis.py
+────────────────────
 Multi-step blocking analysis pipeline — orchestration layer.
 
 Pipeline:
@@ -21,8 +21,8 @@ Also owns: jurisdiction/result helpers, RAG context building, and the
 per-patent JSON analysis cache.
 """
 
+import logging
 import asyncio
-import json
 import re
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -30,13 +30,16 @@ from typing import Dict, List, Optional
 from .. import config
 from .. import gcp_utils
 # Shared chunking utilities — reused instead of reimplemented here.
-from ..chunking.indexer import generate_embeddings, get_dates_from_alloydb as get_dates_from_chromadb
-from ..chunking.utils import extract_jurisdiction
+from ..chunking.dates import get_dates_from_alloydb
+from ..chunking.indexer import generate_embeddings
+from ..utils import extract_jurisdiction
 from .step1_claim_classification import _run_step1
 from .step2_claim_elements import _run_step2, get_drug_rows
 from .step3_scientific_barrier import _run_step3
 from .step4_development_feasibility import _run_step4
 from .step5_novelty_difficulty import _run_step5
+
+logger = logging.getLogger(__name__)
 
 
 _ANALYSIS_CONCURRENCY = asyncio.Semaphore(config.ANALYSIS_CONCURRENCY)
@@ -45,8 +48,6 @@ _ANALYSIS_CONCURRENCY = asyncio.Semaphore(config.ANALYSIS_CONCURRENCY)
 # ─────────────────────────────────────────────
 # Jurisdiction helpers
 # ─────────────────────────────────────────────
-# extract_jurisdiction() is shared — imported from ..chunking.utils above
-# (identical logic was previously duplicated here and in gcs_lister.py).
 
 def is_non_analysable_patent(filename: str) -> bool:
     """Returns True only for patents that cannot be analysed (e.g. unknown jurisdiction)."""
@@ -137,7 +138,7 @@ async def rag_query(
         )
         return results["documents"][0]
     except Exception as e:
-        print(f"[RAG] Query failed: {e}")
+        logger.error(f"[RAG] Query failed: {e}")
         return []
 
 
@@ -162,10 +163,10 @@ def get_all_chunks(collection, filename: str) -> List[str]:
             key=lambda x: x[1].get("chunk_index", 0),
         )
         chunks = [doc for doc, _ in combined]
-        print(f"[FULL DOC] {filename} -> {len(chunks)} chunk(s) retrieved")
+        logger.info(f"[FULL DOC] {filename} -> {len(chunks)} chunk(s) retrieved")
         return chunks
     except Exception as e:
-        print(f"[FULL DOC] Failed to retrieve chunks for {filename}: {e}")
+        logger.warning(f"[FULL DOC] Failed to retrieve chunks for {filename}: {e}")
         return []
 
 
@@ -179,11 +180,11 @@ async def build_rag_context(collection, filename: str) -> str:
     """
     chunks = get_all_chunks(collection, filename)
     if not chunks:
-        print(f"[FULL DOC] No chunks found for {filename}")
+        logger.warning(f"[FULL DOC] No chunks found for {filename}")
         return ""
 
     context = "\n\n---\n\n".join(chunks)
-    print(f"[FULL DOC] Built context: {len(chunks)} chunks | {len(context):,} chars for {filename}")
+    logger.info(f"[FULL DOC] Built context: {len(chunks)} chunks | {len(context):,} chars for {filename}")
     return context
 
 
@@ -217,15 +218,15 @@ async def _run_step1_only(
         jurisdiction_hint  = extract_jurisdiction(patent_number_hint)
 
         context = await build_rag_context(collection, filename)
-        dates   = get_dates_from_chromadb(collection, filename)
+        dates   = get_dates_from_alloydb(collection, filename)
 
         if not context.strip():
-            print(f"[PHASE 1] No RAG chunks for {filename} — skipping")
+            logger.warning(f"[PHASE 1] No RAG chunks for {filename} — skipping")
             return None
 
         step1 = await _run_step1(filename, context, patent_number_hint, jurisdiction_hint)
         if step1 is None:
-            print(f"[PHASE 1] Step 1 failed for {filename}")
+            logger.warning(f"[PHASE 1] Step 1 failed for {filename}")
             return None
 
         patent_number = re.sub(r"[\s,]", "", (step1.get("patent_number") or "").strip())
@@ -236,7 +237,7 @@ async def _run_step1_only(
         step1["patent_number"] = patent_number
         step1["jurisdiction"]  = jurisdiction
 
-        print(
+        logger.info(
             f"[PHASE 1] {filename} → {step1['claim_category']} | "
             f"{patent_number} | {jurisdiction}"
         )
@@ -311,20 +312,20 @@ async def _run_steps2_plus(
         patent_number = phase1["patent_number"]
         jurisdiction  = phase1["jurisdiction"]
 
-        print(f"\n[PHASE 2] ── {filename} → Steps 2+ ──")
-        print(f"[STEP 1] {filename} → {step1['claim_category']} — proceeding to Step 2...")
+        logger.info(f"\n[PHASE 2] ── {filename} → Steps 2+ ──")
+        logger.info(f"[STEP 1] {filename} → {step1['claim_category']} — proceeding to Step 2...")
 
         # ── Step 2 ──────────────────────────────────────────────────────────
         step2 = await _run_step2(filename, context, step1, drug_rows)
 
         if step2 is None:
-            print(f"[ANALYSIS] Step 2 failed for {filename}")
+            logger.warning(f"[ANALYSIS] Step 2 failed for {filename}")
             r = error_result(filename)
             r.update(dates)
             return r
 
         if not step2["any_element_present"]:
-            print(
+            logger.info(
                 f"[STEP 2] {filename} → No claim elements present → NON-BLOCKING\n"
                 f"         Reason: {(step2.get('reason') or '')[:120]}"
             )
@@ -371,7 +372,7 @@ async def _run_steps2_plus(
             }
 
         # ── Step 3 ──────────────────────────────────────────────────────────
-        print(
+        logger.info(
             f"[STEP 2] {filename} → Elements present: {step2['matched_elements']} "
             f"— continuing to Step 3..."
         )
@@ -387,13 +388,13 @@ async def _run_steps2_plus(
         )
 
         if step3 is None:
-            print(f"[ANALYSIS] Step 3 failed for {filename}")
+            logger.warning(f"[ANALYSIS] Step 3 failed for {filename}")
             r = error_result(filename)
             r.update(dates)
             return r
 
         if not step3["is_technical_barrier"]:
-            print(
+            logger.info(
                 f"[STEP 3] {filename} → Not a technical barrier → NON-BLOCKING\n"
                 f"         Reason: {(step3.get('reason') or '')[:120]}"
             )
@@ -440,7 +441,7 @@ async def _run_steps2_plus(
             }
 
         # ── Step 3 pass → Step 4 ─────────────────────────────────────────────
-        print(
+        logger.info(
             f"[STEP 3] {filename} → Real technical barrier confirmed "
             f"({step3['confidence']} confidence) — continuing to Step 4..."
         )
@@ -456,7 +457,7 @@ async def _run_steps2_plus(
         )
 
         if step4 is None:
-            print(f"[STEP 4] {filename} → Step 4 failed — treating as NON-BLOCKING")
+            logger.warning(f"[STEP 4] {filename} → Step 4 failed — treating as NON-BLOCKING")
             step4 = {
                 "is_blocking_indicator":              False,
                 "regulatory_failure_if_removed":      None,
@@ -467,7 +468,7 @@ async def _run_steps2_plus(
             }
 
         if not step4["is_blocking_indicator"]:
-            print(
+            logger.info(
                 f"[STEP 4] {filename} → Development can proceed without feature → NON-BLOCKING\n"
                 f"         Reason: {(step4.get('reason') or '')[:120]}"
             )
@@ -507,7 +508,7 @@ async def _run_steps2_plus(
             }
 
         # ── Step 4 pass → blocking indicator confirmed, continue to Step 5 ────
-        print(
+        logger.info(
             f"[STEP 4] {filename} → Blocking indicator confirmed "
             f"({step4['confidence']} confidence) — continuing to Step 5..."
         )
@@ -523,7 +524,7 @@ async def _run_steps2_plus(
         )
 
         if step5 is None:
-            print(f"[STEP 5] {filename} → Step 5 failed — treating as NON-BLOCKING")
+            logger.warning(f"[STEP 5] {filename} → Step 5 failed — treating as NON-BLOCKING")
             step5 = {
                 "is_novel_and_difficult": False,
                 "novelty_signal":         "low",
@@ -539,7 +540,7 @@ async def _run_steps2_plus(
         final_tag        = step5.get("final_tag", "NON-BLOCKING")
         blocking_cat     = step5.get("blocking_category") if final_tag == "BLOCKING" else None
 
-        print(
+        logger.info(
             f"[STEP 5] {filename} → FINAL: {final_tag}"
             + (f" | Category: {blocking_cat}" if blocking_cat else "")
         )
@@ -612,7 +613,7 @@ def store_patent_analysis(drug_name: str, filename: str, result: Dict) -> None:
             config.GCS_ANALYSIS_CACHE_SUBFOLDER, _cache_filename(filename), result, drug_name=drug_name,
         )
     except Exception as e:
-        print(f"[ANALYSIS CACHE] Store failed for {filename}: {e}")
+        logger.warning(f"[ANALYSIS CACHE] Store failed for {filename}: {e}")
 
 
 def load_cached_patent_analysis(drug_name: str, filename: str) -> Optional[Dict]:
@@ -639,7 +640,7 @@ def load_cached_patents_bulk(drug_name: str, filenames: List[str]) -> Dict[str, 
             if patent is not None:
                 cached[filename] = patent
         except Exception as e:
-            print(f"[ANALYSIS CACHE] Failed to read cache for {filename}: {e}")
+            logger.warning(f"[ANALYSIS CACHE] Failed to read cache for {filename}: {e}")
             continue
     return cached
 
@@ -650,8 +651,8 @@ def invalidate_patent_cache(drug_name: str, filename: str) -> None:
         gcp_utils.delete_blob(
             config.GCS_ANALYSIS_CACHE_SUBFOLDER, _cache_filename(filename), drug_name=drug_name,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("[ANALYSIS CACHE] Could not invalidate the cache for %s: %s", filename, e)
 
 
 def invalidate_drug_cache(drug_name: str) -> None:
@@ -662,9 +663,9 @@ def invalidate_drug_cache(drug_name: str) -> None:
         )
         for name in names:
             gcp_utils.delete_blob(config.GCS_ANALYSIS_CACHE_SUBFOLDER, name, drug_name=drug_name)
-        print(f"[ANALYSIS CACHE] Invalidated {len(names)} cached result(s) for '{drug_name}'")
+        logger.info(f"[ANALYSIS CACHE] Invalidated {len(names)} cached result(s) for '{drug_name}'")
     except Exception as e:
-        print(f"[ANALYSIS CACHE] Invalidation failed for '{drug_name}': {e}")
+        logger.warning(f"[ANALYSIS CACHE] Invalidation failed for '{drug_name}': {e}")
 
 
 # ─────────────────────────────────────────────
@@ -707,7 +708,7 @@ async def run_blocking_analysis(
     skipped_files  = [f for f in all_filenames if     is_non_analysable_patent(f)]
 
     for f in skipped_files:
-        print(f"[SKIP ANALYSIS] {f} — non-US/EP patent")
+        logger.info(f"[SKIP ANALYSIS] {f} — non-US/EP patent")
 
     # ── Load cached results for already-analysed patents ──────────────────────
     cached_results: Dict[str, Dict] = {}
@@ -718,25 +719,25 @@ async def run_blocking_analysis(
         new_files      = [f for f in analysis_files if f not in cached_results]
 
         if cached_results:
-            print(
+            logger.info(
                 f"\n[CACHE] {len(cached_results)} patent(s) loaded from cache, "
                 f"{len(new_files)} new patent(s) to analyse"
             )
             for f in cached_results:
                 tag = cached_results[f].get("tag", "?")
                 cat = cached_results[f].get("claim_category", "?")
-                print(f"  [CACHED] {f} → {tag} ({cat})")
+                logger.info(f"  [CACHED] {f} → {tag} ({cat})")
         else:
-            print(f"\n[CACHE] No cached results — analysing all {len(analysis_files)} patent(s)")
+            logger.info(f"\n[CACHE] No cached results — analysing all {len(analysis_files)} patent(s)")
             new_files = analysis_files
     else:
-        print(f"\n[CACHE] Force re-analyse — ignoring cache for all {len(analysis_files)} patent(s)")
+        logger.info(f"\n[CACHE] Force re-analyse — ignoring cache for all {len(analysis_files)} patent(s)")
         invalidate_drug_cache(drug_name)
         new_files = analysis_files
 
     # If everything is cached, skip the expensive Gemini calls entirely
     if not new_files:
-        print(f"[CACHE] All patents cached — skipping Gemini analysis entirely")
+        logger.warning("[CACHE] All patents cached — skipping Gemini analysis entirely")
         patents = list(cached_results.values())
         for filename in skipped_files:
             patents.append(skipped_result(filename))
@@ -745,18 +746,18 @@ async def run_blocking_analysis(
 
     drug_rows = get_drug_rows(drug_name)
     if drug_rows:
-        print(f"[STEP 2] {len(drug_rows)} Excel record(s) ready for '{drug_name}'")
+        logger.info(f"[STEP 2] {len(drug_rows)} Excel record(s) ready for '{drug_name}'")
     else:
-        print(f"[STEP 2] No Excel data for '{drug_name}' — Step 2 will assess from patent claims alone")
+        logger.info(f"[STEP 2] No Excel data for '{drug_name}' — Step 2 will assess from patent claims alone")
 
     if drug_phase:
-        print(f"[STEP 3] Phase info ready for '{drug_name}': {drug_phase}")
+        logger.info(f"[STEP 3] Phase info ready for '{drug_name}': {drug_phase}")
     else:
-        print(f"[STEP 3] No phase info for '{drug_name}' — defaulting to clinical path")
+        logger.info(f"[STEP 3] No phase info for '{drug_name}' — defaulting to clinical path")
         drug_phase = {}
 
     # ── Phase 1: Step 1 on NEW patents in parallel ────────────────────────────
-    print(f"\n[PHASE 1] Running Step 1 on {len(new_files)} NEW patent(s)...")
+    logger.info(f"\n[PHASE 1] Running Step 1 on {len(new_files)} NEW patent(s)...")
 
     new_phase1_results = await asyncio.gather(
         *[_run_step1_only(f, collection) for f in new_files],
@@ -795,7 +796,7 @@ async def run_blocking_analysis(
         r.get("jurisdiction") for r in all_phase1
         if isinstance(r, dict) and r.get("jurisdiction") and not r.get("_failed")
     ))
-    print(f"[CoM ROUTING] Jurisdictions found: {all_jurisdictions}")
+    logger.info(f"[CoM ROUTING] Jurisdictions found: {all_jurisdictions}")
 
     for jurisdiction in all_jurisdictions:
         com_candidates = [
@@ -812,12 +813,12 @@ async def run_blocking_analysis(
         primary = com_candidates[0]
         primary_com_filenames.add(primary["filename"])
 
-        print(f"\n[CoM ROUTING] Primary CoM for {jurisdiction}: "
+        logger.info(f"\n[CoM ROUTING] Primary CoM for {jurisdiction}: "
               f"{primary.get('patent_number', '?')} (filed: {primary.get('filing_date') or 'unknown'})"
               f" → BLOCKING (skips Steps 2+)")
 
         for secondary in com_candidates[1:]:
-            print(f"[CoM ROUTING] Secondary CoM for {jurisdiction}: "
+            logger.info(f"[CoM ROUTING] Secondary CoM for {jurisdiction}: "
                   f"{secondary.get('patent_number', '?')} → sent to Steps 2+ as Formulation-class")
 
     # ── Build results: merge cached results + route new patents ───────────────
@@ -829,12 +830,12 @@ async def run_blocking_analysis(
         # If a cached patent is now the primary CoM (e.g. a new patent changed routing),
         # we still use its cached result — CoM routing is stable for existing patents.
         patents.append(cached_patent)
-        print(f"[RESULT] {filename} → from cache ({cached_patent.get('tag', '?')})")
+        logger.info(f"[RESULT] {filename} → from cache ({cached_patent.get('tag', '?')})")
 
     # Route new patents
     for filename, result in zip(new_files, new_phase1_results):
         if isinstance(result, Exception) or result is None:
-            print(f"[ERROR] Phase 1 failed for {filename}: {result}")
+            logger.error(f"[ERROR] Phase 1 failed for {filename}: {result}")
             patents.append(error_result(filename))
             continue
 
@@ -842,12 +843,12 @@ async def run_blocking_analysis(
             com_result = _build_com_blocking_result(result)
             patents.append(com_result)
             store_patent_analysis(drug_name, filename, com_result)
-            print(f"[RESULT] {filename} → NEW primary CoM BLOCKING (cached)")
+            logger.info(f"[RESULT] {filename} → NEW primary CoM BLOCKING (cached)")
         else:
             if result.get("step1", {}).get("claim_category") == "Composition of Matter":
                 result["step1"]["claim_category"] = "Formulation"
                 result["step1"]["is_composition_of_matter"] = False
-                print(
+                logger.info(
                     f"[CoM ROUTING] {result.get('patent_number')} reclassified: "
                     f"Composition of Matter → Formulation"
                 )
@@ -855,7 +856,7 @@ async def run_blocking_analysis(
 
     # ── Phase 2: Steps 2+ on NEW non-primary-CoM patents in parallel ──────────
     if phase2_inputs:
-        print(f"\n[PHASE 2] Running Steps 2+ on {len(phase2_inputs)} NEW patent(s)...")
+        logger.info(f"\n[PHASE 2] Running Steps 2+ on {len(phase2_inputs)} NEW patent(s)...")
 
         phase2_results = await asyncio.gather(
             *[_run_steps2_plus(p, drug_name, drug_rows, drug_phase)
@@ -865,12 +866,12 @@ async def run_blocking_analysis(
 
         for phase1_data, result in zip(phase2_inputs, phase2_results):
             if isinstance(result, Exception):
-                print(f"[ERROR] Phase 2 failed for {phase1_data['filename']}: {result}")
+                logger.error(f"[ERROR] Phase 2 failed for {phase1_data['filename']}: {result}")
                 patents.append(error_result(phase1_data["filename"]))
             else:
                 patents.append(result)
                 store_patent_analysis(drug_name, phase1_data["filename"], result)
-                print(f"[RESULT] {phase1_data['filename']} → NEW {result.get('tag', '?')} (cached)")
+                logger.info(f"[RESULT] {phase1_data['filename']} → NEW {result.get('tag', '?')} (cached)")
 
     # ── Add skipped patents ───────────────────────────────────────────────────
     for filename in skipped_files:
@@ -896,10 +897,10 @@ def _print_summary_table(drug_name: str, patents: List[Dict]) -> None:
     )
     divider = "-" * len(header)
 
-    print(f"\n[SUMMARY] ── {drug_name} ──")
-    print(divider)
-    print(header)
-    print(divider)
+    logger.info(f"\n[SUMMARY] ── {drug_name} ──")
+    logger.info(divider)
+    logger.info(header)
+    logger.info(divider)
 
     for p in patents:
         patent_num = p.get("patent_number") or ""
@@ -927,12 +928,11 @@ def _print_summary_table(drug_name: str, patents: List[Dict]) -> None:
                     f"{p.get('step3_evidence_type') or ''}"
                 )
 
-        print(
+        logger.info(
             f"{patent_num:<{col_pn}}  "
             f"{s1:<{col_s1}}  "
             f"{s2:<{col_s2}}  "
             f"{s3:<{col_s3}}"
         )
 
-    print(divider)
-    print()
+    logger.info(divider)

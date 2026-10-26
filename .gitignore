@@ -1,0 +1,68 @@
+# Environment variables — never commit secrets
+.env
+.env.local
+.env.production
+.env.staging
+.env.development
+*.env
+# .env.example is intentionally tracked (no real secrets in it)
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+*.whl
+*.so
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Service account / credentials files
+service.json
+service-account*.json
+*-sa.json
+*.json.key
+credentials*.json
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+*.orig
+
+# Test / coverage
+.coverage
+htmlcov/
+.pytest_cache/

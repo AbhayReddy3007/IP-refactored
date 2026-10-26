@@ -31,7 +31,7 @@ import json
 import logging
 import time
 import urllib.parse
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 import psycopg2
 import psycopg2.extras
@@ -60,13 +60,18 @@ def _database_url() -> str:
     )
 
 
-def _get_conn(retries: int = 3, backoff: float = 2.0):
+def _get_conn(
+    retries: int = None,
+    backoff: float = None,
+):
     """Get a new psycopg2 connection with retry logic for transient failures."""
+    retries = retries if retries is not None else config.ALLOYDB_RETRY_COUNT
+    backoff = backoff if backoff is not None else config.ALLOYDB_RETRY_BACKOFF
     last_err = None
     url = _database_url()
     for attempt in range(retries):
         try:
-            conn = psycopg2.connect(url, connect_timeout=30)
+            conn = psycopg2.connect(url, connect_timeout=config.ALLOYDB_CONNECT_TIMEOUT)
             _open_connections.append(conn)
             return conn
         except psycopg2.OperationalError as e:
@@ -187,13 +192,30 @@ def _lazy_ensure_schema():
 
 class AlloyDBCollection:
     """Mimics the ChromaDB collection interface, backed by the shared
-    `embeddings` table filtered by a `collection` column."""
+    `embeddings` table filtered by a `collection` column.
+
+    Callers use logical ids (e.g. "<md5>_chunk_0"). unique_id is the primary
+    key of the whole table, so ids are stored as "<collection>:<logical id>"
+    to let the same patent exist in several drugs' collections. Rows written
+    before this scheme have bare logical ids, so id lookups match both forms.
+    """
 
     def __init__(self, name: str):
         self.name = name
 
+    def _stored_id(self, logical_id: str) -> str:
+        return f"{self.name}:{logical_id}"
+
+    def _logical_id(self, stored_id: str) -> str:
+        prefix = f"{self.name}:"
+        return stored_id[len(prefix):] if stored_id.startswith(prefix) else stored_id
+
+    def _lookup_ids(self, ids: List[str]) -> List[str]:
+        return [self._stored_id(i) for i in ids] + list(ids)
+
     def add(self, ids: List[str], documents: List[str], embeddings: List[List[float]], metadatas: List[dict]):
-        """Insert rows. Uses ON CONFLICT to upsert."""
+        """Insert rows into this collection, overwriting rows with the same id
+        in this collection only."""
         _lazy_ensure_schema()
         conn = _get_conn()
         try:
@@ -205,11 +227,10 @@ class AlloyDBCollection:
                         VALUES (%s, %s, %s, %s, %s::vector, %s::jsonb)
                         ON CONFLICT (unique_id) DO UPDATE SET
                             sub_id     = EXCLUDED.sub_id,
-                            collection = EXCLUDED.collection,
                             text       = EXCLUDED.text,
                             embedding  = EXCLUDED.embedding,
                             metadata   = EXCLUDED.metadata
-                    """, (uid, meta.get("sub_id", ""), self.name, doc, emb_str, json.dumps(meta)))
+                    """, (self._stored_id(uid), meta.get("sub_id", ""), self.name, doc, emb_str, json.dumps(meta)))
             conn.commit()
         except Exception:
             conn.rollback()
@@ -226,11 +247,12 @@ class AlloyDBCollection:
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 if ids is not None:
-                    placeholders = ",".join(["%s"] * len(ids))
+                    lookup = self._lookup_ids(ids)
+                    placeholders = ",".join(["%s"] * len(lookup))
                     cur.execute(f"""
                         SELECT unique_id, text, embedding, metadata FROM embeddings
                         WHERE collection = %s AND unique_id IN ({placeholders})
-                    """, [self.name] + ids)
+                    """, [self.name] + lookup)
                 elif where is not None:
                     sql, params = _build_where_clause(where)
                     cur.execute(f"""
@@ -247,7 +269,7 @@ class AlloyDBCollection:
             conn.close()
 
         result = {
-            "ids": [r["unique_id"] for r in rows],
+            "ids": [self._logical_id(r["unique_id"]) for r in rows],
             "documents": [r["text"] for r in rows] if "documents" in include else [],
             "metadatas": [r["metadata"] for r in rows] if "metadatas" in include else [],
             "embeddings": [],
@@ -292,7 +314,7 @@ class AlloyDBCollection:
             conn.close()
 
         return {
-            "ids": [[r["unique_id"] for r in rows]],
+            "ids": [[self._logical_id(r["unique_id"]) for r in rows]],
             "documents": [[r["text"] for r in rows]] if "documents" in include else [[]],
             "metadatas": [[r["metadata"] for r in rows]] if "metadatas" in include else [[]],
             "distances": [[r["distance"] for r in rows]] if "distances" in include else [[]],
@@ -307,8 +329,8 @@ class AlloyDBCollection:
                 for uid, meta in zip(ids, metadatas):
                     cur.execute("""
                         UPDATE embeddings SET metadata = %s::jsonb
-                        WHERE unique_id = %s AND collection = %s
-                    """, (json.dumps(meta), uid, self.name))
+                        WHERE unique_id IN (%s, %s) AND collection = %s
+                    """, (json.dumps(meta), self._stored_id(uid), uid, self.name))
             conn.commit()
         except Exception:
             conn.rollback()
@@ -323,10 +345,11 @@ class AlloyDBCollection:
         try:
             with conn.cursor() as cur:
                 if ids is not None:
-                    placeholders = ",".join(["%s"] * len(ids))
+                    lookup = self._lookup_ids(ids)
+                    placeholders = ",".join(["%s"] * len(lookup))
                     cur.execute(f"""
                         DELETE FROM embeddings WHERE collection = %s AND unique_id IN ({placeholders})
-                    """, [self.name] + ids)
+                    """, [self.name] + lookup)
                 elif where is not None:
                     sql, params = _build_where_clause(where)
                     cur.execute(f"""

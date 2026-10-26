@@ -13,6 +13,7 @@ Also handles:
   - Date normalisation to DD-MMM-YYYY
 """
 
+import logging
 import asyncio
 import json
 import re
@@ -24,27 +25,19 @@ from urllib.parse import quote_plus
 import requests
 from bs4 import BeautifulSoup
 from google.genai import types
-from google.cloud import bigquery
-from google.oauth2 import service_account
 
-from .. import config
-from .. import gcp_utils
+from ... import config
+from ... import gcp_utils
+from ...utils import format_date_dmy
+from ..bq_utils import fetch_brands_df
 
-# ─────────────────────────────────────────────
-# Config — sourced from IP_refactored.config (single source of truth)
-# ─────────────────────────────────────────────
-
-BQ_PROJECT_ID      = config.BQ_PROJECT_ID
-BQ_DATASET_ID      = config.BQ_DATASET_ID
-BQ_SERVICE_ACCOUNT  = config.GOOGLE_APPLICATION_CREDENTIALS
-BQ_BRANDS_TABLE     = config.BQ_BRANDS_TABLE or None
+logger = logging.getLogger(__name__)
 
 # Shared, lazily-instantiated Gemini client (see gcp_utils.get_gemini_client) —
 # no module-local _LazyGenaiClient duplication.
 gemini_client = gcp_utils.get_gemini_client()
 
 _HTTP_HEADERS = {"User-Agent": "Mozilla/5.0", "Accept-Language": "en-US,en;q=0.9"}
-_HTTP_DELAY   = 0.7
 
 _PHARMA_OUTLETS = [
     ("Fierce Pharma",  "https://www.fiercepharma.com/search?q={q}"),
@@ -105,46 +98,30 @@ def _find_date_in_text(text: str) -> Optional[str]:
     return None
 
 
-def format_approval_date(raw: Optional[str]) -> Optional[str]:
-    """Normalises approval dates to DD-MMM-YYYY (e.g. 05-Dec-2017)."""
-    if not raw or str(raw).lower() in ("none", "null", "n/a", ""):
-        return None
-    raw = str(raw).strip()
-    formats = [
-        "%Y%m%d", "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y",
-        "%d %B %Y", "%B %d, %Y", "%B %d %Y", "%d-%b-%Y", "%b %d, %Y",
-    ]
-    for fmt in formats:
-        try:
-            return datetime.strptime(raw, fmt).strftime("%d-%b-%Y")
-        except ValueError:
-            continue
-    return raw
-
-
 def _http_get(url: str, **kwargs) -> Optional[requests.Response]:
     try:
-        r = requests.get(url, headers=_HTTP_HEADERS, timeout=15, **kwargs)
+        r = requests.get(url, headers=_HTTP_HEADERS, timeout=config.APPROVAL_HTTP_TIMEOUT, **kwargs)
         r.raise_for_status()
         return r
     except requests.RequestException as e:
-        print(f"[APPROVAL HTTP] {e}")
+        logger.info(f"[APPROVAL HTTP] {e}")
         return None
 
 
-def _is_domain_reachable(host: str, port: int = 443, timeout: float = 3.0) -> bool:
+def _is_domain_reachable(host: str, port: int = 443, timeout: float = None) -> bool:
+    timeout = timeout if timeout is not None else config.APPROVAL_DOMAIN_CHECK_TIMEOUT
     if host in _DOMAIN_REACHABLE_CACHE:
         return _DOMAIN_REACHABLE_CACHE[host]
     import socket
     try:
-        socket.setdefaulttimeout(timeout)
+        socket.setdefaulttimeout(timeout or config.APPROVAL_DOMAIN_CHECK_TIMEOUT)
         socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect((host, port))
         _DOMAIN_REACHABLE_CACHE[host] = True
-        print(f"[NETWORK] {host} is reachable")
+        logger.info(f"[NETWORK] {host} is reachable")
         return True
     except (socket.error, OSError):
         _DOMAIN_REACHABLE_CACHE[host] = False
-        print(f"[NETWORK] {host} is NOT reachable — skipping Step A")
+        logger.warning(f"[NETWORK] {host} is NOT reachable — skipping Step A")
         return False
 
 
@@ -155,7 +132,7 @@ def _is_domain_reachable(host: str, port: int = 443, timeout: float = 3.0) -> bo
 def _resolve_brands_fda(generic: str) -> List[str]:
     r = _http_get("https://api.fda.gov/drug/drugsfda.json", params={
         "search": f'openfda.generic_name:"{generic}" OR openfda.substance_name:"{generic}"',
-        "limit": 10,
+        "limit": config.FDA_API_BRAND_SEARCH_LIMIT,
     })
     if not r:
         return []
@@ -165,7 +142,7 @@ def _resolve_brands_fda(generic: str) -> List[str]:
             if b.upper() not in seen:
                 seen.add(b.upper())
                 brands.append(b)
-    time.sleep(_HTTP_DELAY)
+    time.sleep(config.APPROVAL_HTTP_DELAY)
     return brands
 
 
@@ -190,69 +167,27 @@ def _resolve_brands_ema(generic: str) -> List[str]:
                         brands.append(name)
     if not brands:
         brands.append(generic)
-    time.sleep(_HTTP_DELAY)
+    time.sleep(config.APPROVAL_HTTP_DELAY)
     return brands
 
 
 def fetch_brands_from_bq(drug_name: str) -> Dict[str, List[str]]:
     """Fetches brand names for a drug from the BQ brands table, split by US/EU."""
-    if not (BQ_PROJECT_ID and BQ_DATASET_ID and BQ_BRANDS_TABLE):
-        print(f"[BRANDS BQ] BQ_BRANDS_TABLE not configured")
-        return {"US": [], "EU": []}
+    result: Dict[str, List[str]] = {"US": [], "EU": []}
+    for _, row in fetch_brands_df(drug_name).iterrows():
+        brand   = str(row.get("Brand_Name") or "").strip()
+        geo_raw = str(row.get("Drug_Geography") or "").strip()
+        if not brand:
+            continue
+        for geo in [g.strip() for g in re.split(r"[,;]", geo_raw) if g.strip()]:
+            geo_upper = geo.upper()
+            if geo_upper in ("UNITED STATES", "US", "USA") and brand not in result["US"]:
+                result["US"].append(brand)
+            elif geo_upper in ("EU", "EUROPE", "EUROPEAN UNION") and brand not in result["EU"]:
+                result["EU"].append(brand)
 
-    try:
-        if BQ_SERVICE_ACCOUNT:
-            credentials = service_account.Credentials.from_service_account_file(
-                BQ_SERVICE_ACCOUNT,
-                scopes=["https://www.googleapis.com/auth/cloud-platform"],
-            )
-            client = bigquery.Client(credentials=credentials, project=BQ_PROJECT_ID)
-        else:
-            client = bigquery.Client(project=BQ_PROJECT_ID)
-
-        fq_table = f"`{BQ_PROJECT_ID}.{BQ_DATASET_ID}.{BQ_BRANDS_TABLE}`"
-        query = f"""
-        SELECT DISTINCT cleaned_generic_name, Brand_Name, Drug_Geography
-        FROM {fq_table}
-        WHERE Brand_Name IS NOT NULL
-          AND TRIM(Brand_Name) <> ''
-          AND LOWER(cleaned_generic_name) = LOWER(@drug_name)
-          AND (
-            UPPER(cleaned_Target) LIKE '%GLUCAGON LIKE PEPTIDE 1%'
-            OR UPPER(cleaned_Target) LIKE '%GLP-1%'
-            OR UPPER(cleaned_Target) LIKE '%GLUCAGON LIKE PEPTIDE-1%'
-            OR (data_source = 'IPD' AND Mechanism_of_Action = 'Glucagon-like peptide-1 (GLP-1) agonist')
-          )
-          AND LOWER(highest_development_stage) = 'marketed'
-        ORDER BY cleaned_generic_name, Brand_Name
-        """
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("drug_name", "STRING", drug_name)
-            ]
-        )
-        df = client.query(query, job_config=job_config).to_dataframe()
-        print(f"[BRANDS BQ] '{drug_name}' → {len(df)} row(s)")
-
-        result: Dict[str, List[str]] = {"US": [], "EU": []}
-        for _, row in df.iterrows():
-            brand   = str(row.get("Brand_Name") or "").strip()
-            geo_raw = str(row.get("Drug_Geography") or "").strip()
-            if not brand:
-                continue
-            for geo in [g.strip() for g in re.split(r"[,;]", geo_raw) if g.strip()]:
-                geo_upper = geo.upper()
-                if geo_upper in ("UNITED STATES", "US", "USA") and brand not in result["US"]:
-                    result["US"].append(brand)
-                elif geo_upper in ("EU", "EUROPE", "EUROPEAN UNION") and brand not in result["EU"]:
-                    result["EU"].append(brand)
-
-        print(f"[BRANDS BQ] US: {result['US']} | EU: {result['EU']}")
-        return result
-
-    except Exception as e:
-        print(f"[BRANDS BQ] Query failed for '{drug_name}': {e}")
-        return {"US": [], "EU": []}
+    logger.info(f"[BRANDS BQ] US: {result['US']} | EU: {result['EU']}")
+    return result
 
 
 # ─────────────────────────────────────────────
@@ -262,15 +197,15 @@ def fetch_brands_from_bq(drug_name: str) -> Dict[str, List[str]]:
 def _approval_step_a_fda(brand: str) -> Tuple[Optional[str], str]:
     r = _http_get(
         "https://api.fda.gov/drug/drugsfda.json",
-        params={"search": f'openfda.brand_name:"{brand}"', "limit": 5},
+        params={"search": f'openfda.brand_name:"{brand}"', "limit": config.FDA_API_APPROVAL_SEARCH_LIMIT},
     )
     if not r:
-        time.sleep(_HTTP_DELAY)
+        time.sleep(config.APPROVAL_HTTP_DELAY)
         return None, "FDA: not found"
 
     results = r.json().get("results", [])
     if not results:
-        time.sleep(_HTTP_DELAY)
+        time.sleep(config.APPROVAL_HTTP_DELAY)
         return None, "FDA: not found"
 
     original_approval_dates = []
@@ -289,7 +224,7 @@ def _approval_step_a_fda(brand: str) -> Tuple[Optional[str], str]:
                 if sub.get("submission_status") == "AP" and sub.get("submission_status_date"):
                     original_approval_dates.append(sub["submission_status_date"])
 
-    time.sleep(_HTTP_DELAY)
+    time.sleep(config.APPROVAL_HTTP_DELAY)
     if original_approval_dates:
         earliest = min(original_approval_dates)
         return earliest, "FDA Drugs@FDA API"
@@ -384,7 +319,7 @@ def _approval_step_a_ema(brand: str) -> Tuple[Optional[str], str]:
                 if d:
                     return d, f"EMA EPAR ({epar_url})"
 
-    time.sleep(_HTTP_DELAY)
+    time.sleep(config.APPROVAL_HTTP_DELAY)
     nat_url = (
         "https://www.ema.europa.eu/en/medicines/national-registers-authorised-medicines"
         f"?search_api_fulltext={quote_plus(brand)}"
@@ -506,7 +441,7 @@ def _approval_step_c_news(brand: str, geo: str) -> Tuple[Optional[str], str]:
             d = _scrape_article_for_date(article_url, brand, geo)
             if d:
                 return d, f"{outlet_name} | {article_url}"
-            time.sleep(_HTTP_DELAY)
+            time.sleep(config.APPROVAL_HTTP_DELAY)
     return None, "Step C: not found"
 
 
@@ -517,7 +452,7 @@ def _approval_step_c_news(brand: str, geo: str) -> Tuple[Optional[str], str]:
 def _get_approval_date_for_brand(
     brand: str, companies: List[str], geo: str
 ) -> Tuple[Optional[str], str]:
-    print(f"[APPROVAL] [{geo}] '{brand}'")
+    logger.info(f"[APPROVAL] [{geo}] '{brand}'")
 
     if geo == "US":
         if _is_domain_reachable("api.fda.gov"):
@@ -525,21 +460,21 @@ def _get_approval_date_for_brand(
             if date:
                 return date, src
         else:
-            print(f"[APPROVAL] [{geo}] Skipping Step A — api.fda.gov unreachable")
+            logger.warning(f"[APPROVAL] [{geo}] Skipping Step A — api.fda.gov unreachable")
     else:
         if _is_domain_reachable("www.ema.europa.eu"):
             date, src = _approval_step_a_ema(brand)
             if date:
                 return date, src
         else:
-            print(f"[APPROVAL] [{geo}] Skipping Step A — ema.europa.eu unreachable")
+            logger.warning(f"[APPROVAL] [{geo}] Skipping Step A — ema.europa.eu unreachable")
 
-    print(f"[APPROVAL] [{geo}] Step A failed → Step B (Gemini)")
+    logger.warning(f"[APPROVAL] [{geo}] Step A failed → Step B (Gemini)")
     date, src = _approval_step_b_gemini(brand, companies, geo)
     if date:
         return date, src
 
-    print(f"[APPROVAL] [{geo}] Step B failed → Step C (pharma news)")
+    logger.warning(f"[APPROVAL] [{geo}] Step B failed → Step C (pharma news)")
     return _approval_step_c_news(brand, geo)
 
 
@@ -576,28 +511,28 @@ async def fetch_approval_dates(
     }
 
     if not fetch_us and not fetch_eu:
-        print(f"[APPROVAL] '{drug_name}' — not Marketed in any jurisdiction, skipping")
+        logger.warning(f"[APPROVAL] '{drug_name}' — not Marketed in any jurisdiction, skipping")
         return result
 
-    loop        = asyncio.get_event_loop()
+    loop        = asyncio.get_running_loop()
     bq_brand_map = await loop.run_in_executor(None, lambda: fetch_brands_from_bq(drug_name))
 
     for geo, should_fetch in (("US", fetch_us), ("EU", fetch_eu)):
         if not should_fetch:
-            print(f"[APPROVAL] [{geo}] '{drug_name}' — not Marketed, skipping")
+            logger.warning(f"[APPROVAL] [{geo}] '{drug_name}' — not Marketed, skipping")
             continue
 
         brands = bq_brand_map.get(geo, [])
         if not brands:
             brands = [b.strip() for b in bq_brands if b.strip()]
             if brands:
-                print(f"[BRANDS BQ] [{geo}] No BQ brands — using timeline brands: {brands}")
+                logger.info(f"[BRANDS BQ] [{geo}] No BQ brands — using timeline brands: {brands}")
         if not brands:
             brands = [drug_name]
-            print(f"[BRANDS BQ] [{geo}] No brands found — using generic name '{drug_name}'")
+            logger.warning(f"[BRANDS BQ] [{geo}] No brands found — using generic name '{drug_name}'")
 
         result[geo]["brands"] = brands
-        print(f"[APPROVAL] [{geo}] '{drug_name}' → trying brands: {brands}")
+        logger.info(f"[APPROVAL] [{geo}] '{drug_name}' → trying brands: {brands}")
 
         found = []
         for brand in brands:
@@ -606,10 +541,10 @@ async def fetch_approval_dates(
                 lambda b=brand, g=geo: _get_approval_date_for_brand(b, bq_companies, g),
             )
             if date:
-                formatted = format_approval_date(date)
+                formatted = format_date_dmy(date)
                 if formatted and formatted != "N/A":
                     found.append((formatted, src, brand))
-                    print(f"[APPROVAL] [{geo}] '{brand}' → {formatted}")
+                    logger.info(f"[APPROVAL] [{geo}] '{brand}' → {formatted}")
 
         if found:
             def _parse_for_sort(entry):
@@ -621,7 +556,7 @@ async def fetch_approval_dates(
             earliest = min(found, key=_parse_for_sort)
             result[geo]["date"]   = earliest[0]
             result[geo]["source"] = f"{earliest[2]} | {earliest[1]}"
-            print(
+            logger.info(
                 f"[APPROVAL] [{geo}] Earliest across {len(found)} brand(s): "
                 f"{earliest[0]} ({earliest[2]})"
             )
