@@ -9,8 +9,8 @@ Per drug:
        and use the table's stored "Rationale" column
     3. Ask Gemini for the two pages of analysis text
     4. Build the 2-page PDF and upload it to gs://{REPORT_GCS_BUCKET}/{REPORT_GCS_PATH}/:
-         {drug}/IP/Primary Market Entry Horizon.pdf
-         {drug}/IP/archive/Primary Market Entry Horizon+{timestamp}.pdf
+         {drug}/{GCS_IP_SUBFOLDER}/Primary Market Entry Horizon.pdf
+         {drug}/{GCS_IP_SUBFOLDER}/archive/Primary Market Entry Horizon+{timestamp}.pdf
 
 Usage:
     python -m IP_refactored.primary_market_entry_horizon.generate_report_and_rationale.generate_report
@@ -447,7 +447,7 @@ REPORT_NAME = "Primary Market Entry Horizon"
 
 def report_gcs_paths(drug_name: str, run_ts: str) -> Tuple[str, str]:
     """(current, archived) object paths in config.REPORT_GCS_BUCKET."""
-    ip_folder = f"{config.REPORT_GCS_PATH}/{safe_name(drug_name)}/IP"
+    ip_folder = f"{config.REPORT_GCS_PATH}/{safe_name(drug_name)}/{config.GCS_IP_SUBFOLDER}"
     return f"{ip_folder}/{REPORT_NAME}.pdf", f"{ip_folder}/archive/{REPORT_NAME}+{run_ts}.pdf"
 
 

@@ -7,8 +7,8 @@ target / mechanism of action), then lists each drug's patent PDFs in GCS via
 patent_filter() — so a run only ever touches files for drugs in this list.
 
 Drug names are matched case-insensitively (patent_filter() already does
-this), but every name this module returns or prints is lower-cased, per
-`lower(cleaned_generic_name)`.
+this), but every name this module returns or prints keeps the spelling of
+`cleaned_generic_name` (e.g. "Bgm-0504").
 
 All BigQuery / GCS access goes through IP_refactored.gcp_utils; all
 configuration (project, dataset) comes from IP_refactored.config.
@@ -24,7 +24,6 @@ CLI:
 """
 
 import logging
-from functools import lru_cache
 from typing import Dict, List
 
 from . import config
@@ -56,10 +55,11 @@ AND LOWER(Mechanism_of_Action) NOT LIKE '%antagonist%'
 def drug_list() -> List[str]:
     """
     Runs the GLP-1 drug-discovery query against BigQuery and returns every
-    distinct `cleaned_generic_name`, lower-cased and de-duplicated, sorted.
+    distinct `cleaned_generic_name` as spelled there, de-duplicated
+    case-insensitively, sorted.
 
     Returns:
-        Sorted list of lower-case drug names, e.g. ["liraglutide", "semaglutide", ...]
+        Sorted list of drug names, e.g. ["Bgm-0504", "liraglutide", ...]
         Empty list if the query fails or returns nothing.
     """
     query = GLP1_DRUG_QUERY.format(view=config.DRUG_LIST_VIEW)
@@ -74,13 +74,16 @@ def drug_list() -> List[str]:
         logger.error("[DRUG_LIST] BigQuery query failed: %s", e)
         return []
 
-    names = set()
-    for row in rows:
+    # Keep each name's original spelling; de-duplicate case-insensitively
+    # (first spelling wins) so "Bgm-0504" and "bgm-0504" don't both appear.
+    by_key: Dict[str, str] = {}
+    for row in sorted(rows, key=lambda r: str(r["cleaned_generic_name"] or "")):
         raw = row["cleaned_generic_name"]
         if raw and str(raw).strip():
-            names.add(str(raw).strip().lower())
+            name = str(raw).strip()
+            by_key.setdefault(name.lower(), name)
 
-    drugs = sorted(names)
+    drugs = sorted(by_key.values(), key=str.lower)
     logger.info("[DRUG_LIST] %d GLP-1 drug name(s) found: %s", len(drugs), drugs)
     return drugs
 
@@ -89,17 +92,24 @@ def drug_list() -> List[str]:
 # GCS — filter patent_filter() output down to only GLP-1 drugs
 # ─────────────────────────────────────────────
 
-@lru_cache(maxsize=1)
+_drug_names_cache: tuple = ()
+
+
 def _drug_list_names() -> tuple:
-    return tuple(drug_list())
+    """The drug list, fetched once per process. An empty result (failed query)
+    is not cached, so a transient error can't leave every name unresolved."""
+    global _drug_names_cache
+    if not _drug_names_cache:
+        _drug_names_cache = tuple(drug_list())
+    return _drug_names_cache
 
 
 def resolve_drug_name(name: str) -> str:
-    """The drug's name exactly as the drug list spells it (lower(cleaned_generic_name)).
+    """The drug's name exactly as the drug list spells it (cleaned_generic_name).
 
     Every output (BigQuery tables, JSON, reports, GCS folders) is written
     under this one spelling, whatever case / spacing the caller typed. A name
-    that is not in the drug list falls back to its stripped, lower-cased form."""
+    that is not in the drug list falls back to its stripped form."""
     cleaned = str(name or "").strip()
     for candidate in _drug_list_names():
         if normalize_drug_str(candidate) == normalize_drug_str(cleaned):
@@ -107,7 +117,7 @@ def resolve_drug_name(name: str) -> str:
     for candidate in _drug_list_names():
         if normalize(candidate) == normalize(cleaned):
             return candidate
-    return cleaned.lower()
+    return cleaned
 
 
 def list_glp1_patent_files() -> Dict[str, List[Dict]]:

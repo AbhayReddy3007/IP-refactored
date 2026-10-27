@@ -51,9 +51,12 @@ GCS_PIPELINE_CACHE_BASE_PATH    = os.getenv("GCS_PIPELINE_CACHE_BASE_PATH", "pip
 # markers, JSON caches, etc.) — defaults to the pipeline cache base path.
 GCS_CACHE_PREFIX = os.getenv("GCS_CACHE_PREFIX", GCS_PIPELINE_CACHE_BASE_PATH)
 
+# Per-drug subfolder for the IP pillar's reports.
+GCS_IP_SUBFOLDER = os.getenv("GCS_IP_SUBFOLDER", "IP")
+
 # LOE (Primary Market) PDF reports (primary_market_entry_horizon/generate_report_and_rationale/generate_report.py):
-#   gs://{REPORT_GCS_BUCKET}/{REPORT_GCS_PATH}/{drug}/IP/Primary Market Entry Horizon.pdf
-#   gs://{REPORT_GCS_BUCKET}/{REPORT_GCS_PATH}/{drug}/IP/archive/Primary Market Entry Horizon+{timestamp}.pdf
+#   gs://{REPORT_GCS_BUCKET}/{REPORT_GCS_PATH}/{drug}/{GCS_IP_SUBFOLDER}/Primary Market Entry Horizon.pdf
+#   gs://{REPORT_GCS_BUCKET}/{REPORT_GCS_PATH}/{drug}/{GCS_IP_SUBFOLDER}/archive/Primary Market Entry Horizon+{timestamp}.pdf
 REPORT_GCS_BUCKET = os.getenv("REPORT_GCS_BUCKET") or GCS_BUCKET
 REPORT_GCS_PATH   = os.getenv("REPORT_GCS_PATH", "Cognito_new/reports").strip("/")
 

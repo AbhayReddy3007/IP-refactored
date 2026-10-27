@@ -24,7 +24,7 @@ Usage:
 
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List
 
 from .. import config
@@ -68,11 +68,16 @@ def publish_loe_tables(patents: List[Dict], drug_name: str, run_ts: str) -> Dict
         config.BQ_PATENT_LOE_TABLE: lambda: patents_to_dataframe(patents, drug_name),
         config.BQ_MASTER_LOE_TABLE: lambda: run_merge(patents, drug_name),
     }
+    # When this drug's scores were calculated: ISO 8601, microseconds, UTC.
+    # One value for the drug, shared by both tables.
+    updated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     outputs: Dict[str, Dict] = {}
     for table_id, build in builders.items():
         logger.info("[HORIZON] Building %s ...", table_id)
         try:
-            outputs[table_id] = publish_table(build(), table_id, drug_name, run_ts)
+            table = build()
+            table["updated_at"] = updated_at
+            outputs[table_id] = publish_table(table, table_id, drug_name, run_ts)
         except Exception:
             logger.exception("[HORIZON] Could not build %s for %r", table_id, drug_name)
             outputs[table_id] = {"json_uri": None, "bq_table": None}

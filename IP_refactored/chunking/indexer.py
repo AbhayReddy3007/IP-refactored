@@ -43,7 +43,7 @@ from .. import gcp_utils
 from .alloydb_client import alloydb_client
 from ..patent_filter import patent_filter
 from ..utils import safe_name
-from .dates import extract_dates_from_pdf, get_dates_from_alloydb
+from .dates import get_dates_from_alloydb, resolve_dates
 from .utils import chunk_text, clean_date, fmt_elapsed, safe_collection_name
 
 logger = logging.getLogger(__name__)
@@ -608,7 +608,7 @@ async def _process_single_patent(
             logger.info("[PATENT] %s %s: extracting text and dates in parallel...", position, filename)
             text, dates = await asyncio.gather(
                 extract_text_via_gemini(uploaded_file, filename),
-                extract_dates_from_pdf(pf["path"], filename),
+                resolve_dates(pf["path"], filename),
             )
 
             if not text:

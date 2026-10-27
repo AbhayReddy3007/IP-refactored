@@ -30,7 +30,7 @@ from typing import Dict, List, Optional
 from .. import config
 from .. import gcp_utils
 # Shared chunking utilities — reused instead of reimplemented here.
-from ..chunking.dates import get_dates_from_alloydb
+from ..chunking.dates import get_dates_with_pdf_fallback
 from ..chunking.indexer import generate_embeddings
 from ..utils import extract_jurisdiction
 from .step1_claim_classification import _run_step1
@@ -195,6 +195,8 @@ async def build_rag_context(collection, filename: str) -> str:
 async def _run_step1_only(
     filename:   str,
     collection,
+    blob_name:  Optional[str] = None,
+    drug_name:  str = "",
 ) -> Optional[Dict]:
     """
     Phase 1 helper — runs Step 1 only and returns a dict with everything
@@ -218,7 +220,7 @@ async def _run_step1_only(
         jurisdiction_hint  = extract_jurisdiction(patent_number_hint)
 
         context = await build_rag_context(collection, filename)
-        dates   = get_dates_from_alloydb(collection, filename)
+        dates   = await get_dates_with_pdf_fallback(collection, filename, blob_name, drug_name)
 
         if not context.strip():
             logger.warning(f"[PHASE 1] No RAG chunks for {filename} — skipping")
@@ -759,8 +761,9 @@ async def run_blocking_analysis(
     # ── Phase 1: Step 1 on NEW patents in parallel ────────────────────────────
     logger.info(f"\n[PHASE 1] Running Step 1 on {len(new_files)} NEW patent(s)...")
 
+    blob_names = {ref["filename"]: ref.get("blob_name") for ref in pdf_refs}
     new_phase1_results = await asyncio.gather(
-        *[_run_step1_only(f, collection) for f in new_files],
+        *[_run_step1_only(f, collection, blob_names.get(f), drug_name) for f in new_files],
         return_exceptions=True,
     )
 

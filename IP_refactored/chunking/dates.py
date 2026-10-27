@@ -7,9 +7,17 @@ Patent filing / grant date handling:
                                   (fallback chain: native PDF upload -> rendered-page vision -> OCR prompt)
     get_dates_from_alloydb()   — read the dates already stored for a patent in AlloyDB
                                   (sentinel record, then chunk 0)
+    get_master_filing_date()   — the patent's filing_date in config.PATENT_MASTER_TABLE
+    resolve_dates()            — dates for a patent PDF: filing_date from patent_master,
+                                  read off the PDF only when patent_master has none
+    get_dates()                — stored dates, with filing_date taken from patent_master
+    get_dates_with_pdf_fallback() — get_dates(), reading the PDF if there is still no filing_date
 
-Used by indexer.py (extract once at index time, reuse when already indexed) and
-by blocking_analysis (reads the stored dates).
+patent_master is the source of truth for filing_date. The PDF is only read for
+it when patent_master has no filing_date for that patent.
+
+Used by indexer.py (resolve once at index time, reuse when already indexed) and
+by blocking_analysis (get_dates).
 """
 
 import asyncio
@@ -17,19 +25,34 @@ import hashlib
 import json
 import logging
 import re
+import shutil
 import time
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
+from google.cloud import bigquery
 from google.genai import types
 
 from .. import config
 from .. import gcp_utils
+from ..utils import normalize_patent_number
 from .utils import clean_date, fmt_elapsed
 
 logger = logging.getLogger(__name__)
 
 gemini_client = gcp_utils.get_gemini_client()
+
+# normalised patent number -> filing_date (YYYY-MM-DD) or None when patent_master has none.
+# Only successful lookups are cached, so a failed query is retried next time.
+_master_filing_dates: Dict[str, Optional[str]] = {}
+
+MASTER_FILING_DATE_QUERY = """
+SELECT CAST(filing_date AS STRING) AS filing_date
+FROM `{table}`
+WHERE REGEXP_REPLACE(UPPER(CAST(patent_number AS STRING)), r'[^A-Z0-9]', '') = @patent_number
+AND filing_date IS NOT NULL
+LIMIT 1
+"""
 
 
 # ─────────────────────────────────────────────
@@ -213,6 +236,52 @@ async def extract_dates_from_pdf(file_path: str, filename: str) -> Dict:
 
 
 # ─────────────────────────────────────────────
+# Filing date from patent_master (BigQuery)
+# ─────────────────────────────────────────────
+
+def get_master_filing_date(filename: str) -> Optional[str]:
+    """The filing_date (YYYY-MM-DD) patent_master holds for the patent behind
+    *filename* (matched on the filename stem, ignoring punctuation and case).
+    None if patent_master has no filing_date for it, or the query fails."""
+    if not config.PATENT_MASTER_TABLE:
+        return None
+    patent_number = normalize_patent_number(Path(filename).stem)
+    if not patent_number:
+        return None
+    if patent_number in _master_filing_dates:
+        return _master_filing_dates[patent_number]
+
+    try:
+        query = MASTER_FILING_DATE_QUERY.format(table=config.PATENT_MASTER_TABLE)
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[bigquery.ScalarQueryParameter("patent_number", "STRING", patent_number)]
+        )
+        rows = list(gcp_utils.get_bq_client().query(query, job_config=job_config).result())
+    except Exception as e:
+        logger.warning("[DATES] patent_master filing_date lookup failed for %s: %s", filename, e)
+        return None
+
+    filing_date = clean_date(str(rows[0].filing_date)[:10]) if rows else None
+    _master_filing_dates[patent_number] = filing_date
+    return filing_date
+
+
+async def resolve_dates(file_path: str, filename: str) -> Dict:
+    """Filing/grant dates for a patent PDF. filing_date comes from patent_master;
+    only when it has none is the filing date read off the PDF. grant_date is not
+    in patent_master, so it still comes from the PDF."""
+    loop = asyncio.get_running_loop()
+    master_filing = await loop.run_in_executor(None, get_master_filing_date, filename)
+    dates = await extract_dates_from_pdf(file_path, filename)
+    if master_filing:
+        if dates.get("filing_date") and dates["filing_date"] != master_filing:
+            logger.info("[DATES] %s: using patent_master filing date %s (PDF read %s)",
+                        filename, master_filing, dates["filing_date"])
+        dates["filing_date"] = master_filing
+    return dates
+
+
+# ─────────────────────────────────────────────
 # Stored dates (AlloyDB)
 # ─────────────────────────────────────────────
 
@@ -241,3 +310,39 @@ def get_dates_from_alloydb(collection, filename: str) -> dict:
         logger.warning("[DATES] Chunk-0 read failed for %s: %s", filename, e)
 
     return {"filing_date": None, "grant_date": None}
+
+
+def get_dates(collection, filename: str) -> dict:
+    """Dates for a patent: the stored (AlloyDB) dates, with filing_date taken
+    from patent_master whenever it has one. The stored filing date (read off
+    the PDF at index time) is used only when patent_master has none."""
+    dates = get_dates_from_alloydb(collection, filename)
+    master_filing = get_master_filing_date(filename)
+    if master_filing:
+        dates["filing_date"] = master_filing
+    return dates
+
+
+async def get_dates_with_pdf_fallback(collection, filename: str, blob_name: Optional[str], drug_name: str) -> dict:
+    """get_dates(), and when that still has no filing_date (neither patent_master
+    nor the stored metadata has one) download the patent PDF from GCS and read
+    the dates off its cover page. Only the missing dates are filled in; nothing
+    is written back to AlloyDB."""
+    loop = asyncio.get_running_loop()
+    dates = await loop.run_in_executor(None, get_dates, collection, filename)
+    if dates.get("filing_date") or not blob_name:
+        return dates
+
+    from .indexer import download_single_patent_pdf  # indexer imports this module
+    logger.info("[DATES] %s: no filing date in patent_master or AlloyDB — reading it from the PDF", filename)
+    pf = await loop.run_in_executor(None, download_single_patent_pdf, blob_name, filename, drug_name)
+    if not pf:
+        return dates
+    try:
+        extracted = await extract_dates_from_pdf(pf["path"], filename)
+    finally:
+        if pf.get("tmp_dir"):
+            shutil.rmtree(pf["tmp_dir"], ignore_errors=True)
+    for key in ("filing_date", "grant_date"):
+        dates[key] = dates.get(key) or extracted.get(key)
+    return dates
