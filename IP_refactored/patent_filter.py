@@ -45,7 +45,7 @@ else:
 
 PATENT_MASTER_QUERY_BY_MOLECULE = """
 SELECT patent_number
-FROM `{{table}}`
+FROM `{table}`
 WHERE lower(molecule_name) = @molecule_name
 AND patent_status = '{status}'
 AND confidence > {threshold}
@@ -53,7 +53,7 @@ AND confidence > {threshold}
 
 PATENT_MASTER_QUERY_ALL = """
 SELECT patent_number
-FROM `{{table}}`
+FROM `{table}`
 WHERE patent_status = '{status}'
 AND confidence > {threshold}
 """
