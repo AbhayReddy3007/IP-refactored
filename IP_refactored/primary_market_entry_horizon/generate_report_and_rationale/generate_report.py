@@ -21,6 +21,7 @@ Usage:
 import argparse
 import logging
 import re
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -430,13 +431,12 @@ def _stored_rationale(drug_df: pd.DataFrame) -> Optional[str]:
 # Per-drug run
 # ─────────────────────────────────────────────
 
-REPORT_NAME = "Primary Market Entry Horizon"
-
-
 def report_gcs_paths(drug_name: str, run_ts: str) -> Tuple[str, str]:
-    """(current, archived) object paths in config.REPORT_GCS_BUCKET."""
+    """(current, archived) object paths in config.REPORT_GCS_BUCKET; the report is
+    named after the dimension (config.DIMENSION_PRIMARY_MARKET_ENTRY_HORIZON)."""
     ip_folder = f"{config.REPORT_GCS_PATH}/{safe_name(drug_name)}/{config.GCS_IP_SUBFOLDER}"
-    return f"{ip_folder}/{REPORT_NAME}.pdf", f"{ip_folder}/archive/{REPORT_NAME}+{run_ts}.pdf"
+    name = config.DIMENSION_PRIMARY_MARKET_ENTRY_HORIZON
+    return f"{ip_folder}/{name}.pdf", f"{ip_folder}/archive/{name}+{run_ts}.pdf"
 
 
 def upload_report(drug_name: str, pdf_bytes: bytes, run_ts: str) -> Tuple[str, str]:
@@ -480,6 +480,19 @@ def generate_report(drug_name: str, drug_df: pd.DataFrame, output_dir: Path, upl
         )
         logger.info("[REPORT] %s: uploaded: %s | archive: %s", drug_name, gcs_uri, archive_uri)
     return {"drug_name": drug_name, "local_path": local_path, "gcs_uri": gcs_uri, "archive_uri": archive_uri}
+
+
+def report_for_drug(drug_name: str, upload: bool = True) -> Dict:
+    """Load the drug's rows from glp_master_loe and build + upload its report.
+    Called at the end of every primary_market_entry_horizon run; the local PDF is a
+    temporary copy (the report lives in GCS). Returns generate_report()'s dict."""
+    df = load_master_table([drug_name])
+    if df.empty:
+        raise ValueError(f"No rows for {drug_name!r} in {config.BQ_MASTER_LOE_TABLE}")
+    with tempfile.TemporaryDirectory() as tmp:
+        result = generate_report(drug_name, df, Path(tmp), upload=upload)
+    result["local_path"] = None
+    return result
 
 
 def main() -> None:

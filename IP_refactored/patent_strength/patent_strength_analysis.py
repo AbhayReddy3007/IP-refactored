@@ -33,7 +33,7 @@ from ..drug_list import resolve_drug_name
 from ..gemini_utils import reset_gemini_call_stats
 from ..primary_market_entry_horizon.bq_utils import save_gemini_stats
 from .storage.bq_utils import build_output_bigquery, load_master_loe
-from .scoring.constants import ACTIVE_SFS, DIMENSION_NAME, SF_DISPLAY_NAMES, SF_SCORE_LABELS
+from .scoring.constants import ACTIVE_SFS, SF_DISPLAY_NAMES, SF_SCORE_LABELS
 from .scoring.pipeline import load_score_cache, score_all_patents
 from .scoring.scoring import compute_country_wise_scores
 from .retrieval.shortlist import build_shortlist
@@ -141,7 +141,7 @@ async def patent_strength(drug_name: str, reset: bool = False) -> dict:
         run_status, error = "failed", str(e)
         raise
     finally:
-        save_gemini_stats(resolve_drug_name(drug_name), DIMENSION_NAME, run_status, error, time.time() - t0)
+        save_gemini_stats(resolve_drug_name(drug_name), config.DIMENSION_PATENT_STRENGTH, run_status, error, time.time() - t0)
 
 
 async def _run_patent_strength(drug_name: str, reset: bool) -> dict:

@@ -15,6 +15,7 @@ Orchestrates the whole IP Dimension 1 process for one drug:
     8. Second-pass score calculation with real dates     (score_calculation.calculate_scores)
     9. glp_patent_loe: patents + scores -> BigQuery + JSON in GCS   (score_calculation.merge_forecasted_loe, bq_utils)
    10. glp_master_loe: merged with forecasted_loe, re-scored -> BigQuery + JSON in GCS
+   11. PDF report built from the glp_master_loe rows, uploaded to GCS  (generate_report_and_rationale.generate_report)
 
 Usage:
     from IP_refactored.primary_market_entry_horizon import primary_market_entry_horizon
@@ -85,6 +86,21 @@ def publish_loe_tables(patents: List[Dict], drug_name: str, run_ts: str) -> Dict
     return outputs
 
 
+def _generate_report(drug_name: str) -> Dict:
+    """Build and upload the dimension's report; {"error": ...} if it fails."""
+    # Imported here so reportlab is only needed when a report is built.
+    from .generate_report_and_rationale.generate_report import report_for_drug
+
+    logger.info("[HORIZON] Generating the %s report ...", config.DIMENSION_PRIMARY_MARKET_ENTRY_HORIZON)
+    try:
+        report = report_for_drug(drug_name)
+    except Exception as e:
+        logger.exception("[HORIZON] Report failed for %r", drug_name)
+        return {"error": str(e), "gcs_uri": None, "archive_uri": None}
+    logger.info("[HORIZON] Report -> %s", report["gcs_uri"])
+    return report
+
+
 async def primary_market_entry_horizon(drug_name: str, reindex: bool = False) -> dict:
     """
     Full primary-market-entry-horizon pipeline for ONE drug, plus a Gemini usage
@@ -103,7 +119,7 @@ async def primary_market_entry_horizon(drug_name: str, reindex: bool = False) ->
         run_status, error = "failed", str(e)
         raise
     finally:
-        save_gemini_stats(resolve_drug_name(drug_name), config.GEMINI_STATS_DIMENSION,
+        save_gemini_stats(resolve_drug_name(drug_name), config.DIMENSION_PRIMARY_MARKET_ENTRY_HORIZON,
                           run_status, error, time.time() - t0)
 
 
@@ -179,6 +195,10 @@ async def _run_horizon(drug_name: str, reindex: bool = False) -> dict:
     # Steps 9-10: LOE tables -> BigQuery + JSON
     loe_tables = publish_loe_tables(patents, drug_name, run_ts)
 
+    # Step 11: the dimension's PDF report (built from the glp_master_loe rows just written).
+    # A failed report is recorded in the result but does not fail the run.
+    report = _generate_report(drug_name)
+
     elapsed = time.time() - t0
     logger.info("[HORIZON] Done in %.1fs - %d patent(s)", elapsed, len(patents))
     for table_id, out in loe_tables.items():
@@ -192,4 +212,5 @@ async def _run_horizon(drug_name: str, reindex: bool = False) -> dict:
         "processing_time_seconds": round(elapsed, 1),
         "phase_data_source":       timeline.get("source", "unavailable"),
         "loe_tables":              loe_tables,
+        "report":                  report,
     }

@@ -8,8 +8,6 @@ Infrastructure settings (BigQuery tables, Gemini model, GCS) live in
 IP_refactored.config like every other dimension.
 """
 
-DIMENSION_NAME = "Patent Strength"
-
 # ── Concurrency / retrieval ───────────────────────────────────────────────────
 TOP_K_CHUNKS = 12          # Hard cap on chunks fetched per patent
 PATENT_CONCURRENCY = 8     # How many Gemini calls run at once

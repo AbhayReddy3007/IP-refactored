@@ -97,8 +97,10 @@ GEMINI_SERVICE_TIER       = os.getenv("GEMINI_SERVICE_TIER", "")
 # without thinking levels (e.g. gemini-2.5-flash).
 GEMINI_THINKING_LEVEL     = os.getenv("GEMINI_THINKING_LEVEL", "")
 
-# Dimension name recorded in the per-run Gemini usage table (GEMINI_STATS_TABLE).
-GEMINI_STATS_DIMENSION   = os.getenv("GEMINI_STATS_DIMENSION", "Primary Market Entry Horizon")
+# Names of the IP dimensions. Each is the dimension's report file name (see
+# REPORT_GCS_PATH) and the "dimension" recorded in the Gemini usage table (GEMINI_STATS_TABLE).
+DIMENSION_PRIMARY_MARKET_ENTRY_HORIZON = os.getenv("DIMENSION_PRIMARY_MARKET_ENTRY_HORIZON", "Primary Market Entry Horizon")
+DIMENSION_PATENT_STRENGTH              = os.getenv("DIMENSION_PATENT_STRENGTH", "Patent Strength")
 
 # PDFs are sent inline to Gemini (Vertex has no Files API), so this caps the PDF size.
 GEMINI_FILE_SIZE_LIMIT_MB = int(os.getenv("GEMINI_FILE_SIZE_LIMIT_MB", "50"))
