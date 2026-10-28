@@ -56,7 +56,7 @@ GCS_IP_SUBFOLDER = os.getenv("GCS_IP_SUBFOLDER", "IP")
 # LOE (Primary Market) PDF reports (primary_market_entry_horizon/generate_report_and_rationale/generate_report.py):
 #   gs://{REPORT_GCS_BUCKET}/{REPORT_GCS_PATH}/{drug}/{GCS_IP_SUBFOLDER}/Primary Market Entry Horizon.pdf
 #   gs://{REPORT_GCS_BUCKET}/{REPORT_GCS_PATH}/{drug}/{GCS_IP_SUBFOLDER}/archive/Primary Market Entry Horizon+{timestamp}.pdf
-REPORT_GCS_BUCKET = os.getenv("REPORT_GCS_BUCKET") or GCS_BUCKET
+REPORT_GCS_BUCKET = os.getenv("REPORT_GCS_BUCKET", "cognito-prod") or GCS_BUCKET
 REPORT_GCS_PATH   = os.getenv("REPORT_GCS_PATH", "Cognito_new/reports").strip("/")
 
 # Patent PDFs live under gs://{GCS_BUCKET}/{GCS_PATENTS_PREFIX}/{drug_name}/*.pdf
@@ -297,7 +297,6 @@ FINAL_COLUMNS: list = [
     ("Overall Forecast",                [["overall", "forecast"]]),
     ("Portfolio Gaps",                  [["portfolio", "gaps"]]),
     ("Existing Patent Summary",         [["existing", "patent", "summary"]]),
-    ("Blocking Category",               [["blocking", "category"]]),
     ("Reason",                          [["reason"]]),
 ]
 

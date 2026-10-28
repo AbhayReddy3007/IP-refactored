@@ -152,7 +152,6 @@ def load_loe_table() -> pd.DataFrame:
             "Patent_Number":                            "Patent Number",
             "Jurisdiction":                             "Jurisdiction",
             "Tag":                                      "Tag",
-            "Blocking_Category":                        "Blocking Category",
             "Reason":                                   "Reason",
             "Step_1_Claim_Category":                    "Step 1 Claim Category",
             "Step_2_Matched_Elements":                  "Step 2 Matched Elements",
@@ -880,7 +879,7 @@ def _classify_patent_from_loe(patent_info: Dict) -> Dict[str, str]:
       Dosage Regimen         -> Dosing
 
     Combination is not a loe category — it is inferred from the
-    Blocking Category / Reason text only when an explicit co-therapy
+    Step 1 Claim Category / Reason text only when an explicit co-therapy
     keyword is present (matches the prior rule in _classify_patent).
     """
     result: Dict[str, str] = {}
@@ -892,9 +891,9 @@ def _classify_patent_from_loe(patent_info: Dict) -> Dict[str, str]:
             result[bucket] = f"✓ ({raw_cat})"
 
     # Combination: only mark when an explicit co-therapy signal appears
-    # in Blocking Category or Reason. Mirrors the prior LLM rule.
+    # in Step 1 Claim Category or Reason. Mirrors the prior LLM rule.
     combo_text = " ".join(
-        str(patent_info.get(k, "")) for k in ("Blocking Category", "Reason")
+        str(patent_info.get(k, "")) for k in ("Step 1 Claim Category", "Reason")
     ).lower()
     if any(kw in combo_text for kw in _COMBO_KEYWORDS):
         result["Combination"] = "✓ (co-administration with another agent)"
@@ -974,7 +973,7 @@ async def step1_ip_landscape(drug_filter: Optional[set] = None) -> pd.DataFrame:
 
     _CONTEXT_COLS = [
         "Patent Number", "Jurisdiction", "Tag",
-        "Blocking Category", "Step 1 Claim Category", "Reason",
+        "Step 1 Claim Category", "Reason",
         "Step 2 Matched Elements", "Step 3 Technical Barrier",
         "Step 3 Evidence Summary", "Step 5 Novelty Signal", "Step 5 Reason",
     ]
@@ -1212,7 +1211,7 @@ async def step2_patent_layering(drug_filter: Optional[set] = None) -> pd.DataFra
 
     _CONTEXT_COLS = [
         "Patent Number", "Jurisdiction", "Filing Date", "Source File",
-        "Step 1 Claim Category", "Reason", "Blocking Category",
+        "Step 1 Claim Category", "Reason",
         "Step 3 Evidence Summary", "Step 5 Reason",
     ]
     context_cols = [c for c in _CONTEXT_COLS if c in df.columns]

@@ -102,7 +102,6 @@ def patents_to_dataframe(patents: List[Dict], drug_name: str) -> pd.DataFrame:
             "Overall Forecast":               None,
             "Portfolio Gaps":                 None,
             "Existing Patent Summary":        None,
-            "Blocking Category":              p.get("blocking_category"),
             "Reason":                         p.get("reason"),
             "Approval Date Source":           approval_source,
             "Source File":                    p.get("source_file"),
