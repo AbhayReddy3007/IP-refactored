@@ -100,7 +100,8 @@ GEMINI_THINKING_LEVEL     = os.getenv("GEMINI_THINKING_LEVEL", "")
 # Names of the IP dimensions. Each is the dimension's report file name (see
 # REPORT_GCS_PATH) and the "dimension" recorded in the Gemini usage table (GEMINI_STATS_TABLE).
 DIMENSION_PRIMARY_MARKET_ENTRY_HORIZON = os.getenv("DIMENSION_PRIMARY_MARKET_ENTRY_HORIZON", "Primary Market Entry Horizon")
-DIMENSION_PATENT_STRENGTH              = os.getenv("DIMENSION_PATENT_STRENGTH", "Patent Strength")
+DIMENSION_PATENT_STRENGTH              = os.getenv("DIMENSION_PATENT_STRENGTH", "Patent Strength and Invalidity Opportunity")
+DIMENSION_PATENT_THICKET               = os.getenv("DIMENSION_PATENT_THICKET", "Patent Thicket and Circumvention Feasibility")
 
 # PDFs are sent inline to Gemini (Vertex has no Files API), so this caps the PDF size.
 GEMINI_FILE_SIZE_LIMIT_MB = int(os.getenv("GEMINI_FILE_SIZE_LIMIT_MB", "50"))
@@ -242,9 +243,10 @@ FDA_API_APPROVAL_SEARCH_LIMIT = int(os.getenv("FDA_API_APPROVAL_SEARCH_LIMIT", "
 GCS_JSON_EXPORT = os.getenv("GCS_JSON_EXPORT", "loe_json_exports")
 
 # Which IP dimension(s) run_ip_dimension runs:
-#   all (default)                — primary_market_entry_horizon, then patent_strength
-#   primary_market_entry_horizon — only that dimension
-#   patent_strength              — only that dimension (needs the drug's glp_master_loe rows)
+#   all (default)                    — all three, in the order below
+#   primary_market_entry_horizon     — only that dimension
+#   patent_strength                  — only that dimension (needs the drug's glp_master_loe rows)
+#   patent_thicket_and_circumvention — only that dimension (needs the drug's glp_master_loe rows)
 IP_DIMENSION = os.getenv("IP_DIMENSION", "all").strip().lower()
 
 # When True, forecasted_loe rows for Marketed/Pre-registration drugs are kept
@@ -368,6 +370,12 @@ BQ_MASTER_LOE_TABLE = os.getenv("BQ_MASTER_LOE_TABLE", "cognito-prod-394707.cogn
 # patent_strength():
 BQ_PATENT_STRENGTH_TABLE = os.getenv("BQ_PATENT_STRENGTH_TABLE", "cognito-prod-394707.cognito_prod_datamart.patent_strength_analysis_table")
 BQ_COUNTRY_SCORE_TABLE   = os.getenv("BQ_COUNTRY_SCORE_TABLE", "cognito-prod-394707.cognito_prod_datamart.patent_strength_country_score_table")
+
+# patent_thicket_and_circumvention():
+#   Circumvention_Table         — design-around strategies, one row per strategy per claim category.
+#   Patent_Thicket_Score_Table  — thicket score, one row per jurisdiction plus an average row per drug.
+BQ_CIRCUMVENTION_TABLE  = os.getenv("BQ_CIRCUMVENTION_TABLE", "cognito-prod-394707.cognito_prod_datamart.Circumvention_Table")
+BQ_THICKET_SCORE_TABLE  = os.getenv("BQ_THICKET_SCORE_TABLE", "cognito-prod-394707.cognito_prod_datamart.Patent_Thicket_Score_Table")
 
 # Per-run Gemini usage (one row per model per drug).
 GEMINI_STATS_TABLE = os.getenv("GEMINI_STATS_TABLE", f"{PROJECT_ID}.{BQ_DATASET_ID}.gemini_stats")

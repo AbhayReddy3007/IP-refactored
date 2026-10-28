@@ -1,7 +1,7 @@
 """
 generate_report.py
 ──────────────────
-Patent Strength PDF report, built from the two patent strength tables.
+Patent Strength and Invalidity Opportunity PDF report, built from the two patent strength tables.
 
 Per drug:
     1. Load the drug's rows from config.BQ_PATENT_STRENGTH_TABLE (one per patent) and
@@ -16,8 +16,8 @@ Per drug:
          Country-Weighted Patent Scores · Highest-Risk Patent · Sub-Factor Analysis ·
          Risk & Strength Analysis · Drug-Level Analysis (+ sub-factor / score legend)
     4. Upload it to gs://{REPORT_GCS_BUCKET}/{REPORT_GCS_PATH}/:
-         {drug}/{GCS_IP_SUBFOLDER}/Patent Strength.pdf
-         {drug}/{GCS_IP_SUBFOLDER}/archive/Patent Strength+{timestamp}.pdf
+         {drug}/{GCS_IP_SUBFOLDER}/Patent Strength and Invalidity Opportunity.pdf
+         {drug}/{GCS_IP_SUBFOLDER}/archive/Patent Strength and Invalidity Opportunity+{timestamp}.pdf
        (the file name is config.DIMENSION_PATENT_STRENGTH)
 
 Usage:

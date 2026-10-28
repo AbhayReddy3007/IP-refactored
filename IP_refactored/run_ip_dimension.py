@@ -5,8 +5,10 @@ run_ip_dimension.py
 Command-line entry point for the "IP Dimension" pipeline, on a Linux VM or as
 a Cloud Run Job. It decides WHICH drugs to run (a --drug, DRUG_NAME, or every
 GLP-1 drug with patents in GCS, sharded across Cloud Run tasks) and runs each
-through primary_market_entry_horizon(), which owns the per-drug pipeline:
-patents -> blocking analysis -> scores -> glp_patent_loe / glp_master_loe.
+through the IP dimensions selected by config.IP_DIMENSION (default: all):
+    primary_market_entry_horizon()      patents -> blocking analysis -> scores -> glp_patent_loe / glp_master_loe
+    patent_strength()                   glp_master_loe -> legal-robustness scores -> patent strength tables
+    patent_thicket_and_circumvention()  glp_master_loe -> thicket score + design-around strategies -> its tables
 
 Usage:
     python -m IP_refactored.run_ip_dimension --drug Semaglutide
@@ -27,6 +29,7 @@ from typing import List
 from . import config
 from .drug_list import list_glp1_patent_files
 from .patent_strength import patent_strength
+from .patent_thicket_and_circumvention import patent_thicket_and_circumvention
 from .primary_market_entry_horizon import primary_market_entry_horizon
 from .utils import setup_logging
 
@@ -76,11 +79,17 @@ def get_target_drugs() -> List[str]:
 # Shard runner (Cloud Run Jobs / multi-drug)
 # ─────────────────────────────────────────────
 
-DIMENSIONS = ("all", "primary_market_entry_horizon", "patent_strength")
+DIMENSIONS = ("all", "primary_market_entry_horizon", "patent_strength", "patent_thicket_and_circumvention")
+
+# The dimensions that read the glp_master_loe rows primary_market_entry_horizon writes, in run order.
+_READERS = (
+    ("patent_strength", patent_strength),
+    ("patent_thicket_and_circumvention", patent_thicket_and_circumvention),
+)
 
 
 def get_dimension() -> str:
-    """The dimension(s) to run, from config.IP_DIMENSION (default "all" = both)."""
+    """The dimension(s) to run, from config.IP_DIMENSION (default "all" = every dimension)."""
     dimension = config.IP_DIMENSION
     if dimension not in DIMENSIONS:
         raise ValueError(f"IP_DIMENSION must be one of {', '.join(DIMENSIONS)}; got {dimension!r}")
@@ -89,8 +98,9 @@ def get_dimension() -> str:
 
 async def run_drug(drug_name: str, reindex: bool = False) -> dict:
     """Run the dimension(s) selected by config.IP_DIMENSION for one drug.
-    patent_strength reads the glp_master_loe rows primary_market_entry_horizon
-    writes, so with "all" it runs second and is skipped when the horizon run fails."""
+    patent_strength and patent_thicket_and_circumvention read the glp_master_loe rows
+    primary_market_entry_horizon writes, so with "all" they run after it and are skipped
+    when the horizon run fails. A failure in one of them does not stop the other."""
     dimension = get_dimension()
     result: dict = {"drug_name": drug_name}
     if dimension in ("all", "primary_market_entry_horizon"):
@@ -98,17 +108,19 @@ async def run_drug(drug_name: str, reindex: bool = False) -> dict:
         if result.get("error"):
             return result
 
-    if dimension in ("all", "patent_strength"):
+    for name, run in _READERS:
+        if dimension not in ("all", name):
+            continue
         try:
-            strength = await patent_strength(drug_name, reset=reindex)
+            outcome = await run(drug_name, reset=reindex)
         except Exception as e:
-            logger.exception("[ERROR] patent_strength failed for %s", drug_name)
-            strength = {"drug_name": drug_name, "error": str(e)}
-        if dimension == "patent_strength":
-            return strength
-        result["patent_strength"] = strength
-        if strength.get("error"):
-            result["error"] = f"patent_strength: {strength['error']}"
+            logger.exception("[ERROR] %s failed for %s", name, drug_name)
+            outcome = {"drug_name": drug_name, "error": str(e)}
+        if dimension == name:
+            return outcome
+        result[name] = outcome
+        if outcome.get("error"):
+            result["error"] = "; ".join(filter(None, [result.get("error"), f"{name}: {outcome['error']}"]))
     return result
 
 

@@ -1,7 +1,7 @@
 """
 patent_strength_analysis.py
 ───────────────────────────
-Orchestrates the IP "Patent Strength" dimension for one drug:
+Orchestrates the IP "Patent Strength and Invalidity Opportunity" dimension (package: patent_strength) for one drug:
 
     patent_strength(drug_name)   — async; runs every step below end to end
 
