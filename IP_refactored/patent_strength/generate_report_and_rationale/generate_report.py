@@ -5,16 +5,21 @@ Patent Strength PDF report, built from the two patent strength tables.
 
 Per drug:
     1. Load the drug's rows from config.BQ_PATENT_STRENGTH_TABLE (one per patent) and
-       config.BQ_COUNTRY_SCORE_TABLE (one per jurisdiction, with the stored rationale)
-    2. Build the 2-page PDF:
-         page 1  scorecard + country-wise scores + rationale
-         page 2  every scored patent with its four sub-factor scores
-    3. Upload it to gs://{REPORT_GCS_BUCKET}/{REPORT_GCS_PATH}/:
+       config.BQ_COUNTRY_SCORE_TABLE (one per jurisdiction, with the stored rationale
+       and the drug-level avg_sf_score)
+    2. Compute summary statistics and ask Gemini for the narrative sections
+       (executive summary, key findings, risk / strength highlights, sub-factor
+       analysis, highest-risk patent, geographic risk). The drug-level analysis is the
+       stored rationale.
+    3. Build the PDF:
+         Executive Summary · Portfolio Overview · Key Findings · Patent Score Summary ·
+         Country-Weighted Patent Scores (+ Geographic Risk Analysis) · Highest-Risk Patent ·
+         Sub-Factor Analysis · Risk & Strength Analysis · Drug-Level Analysis ·
+         Sub-Factor Scoring Framework
+    4. Upload it to gs://{REPORT_GCS_BUCKET}/{REPORT_GCS_PATH}/:
          {drug}/{GCS_IP_SUBFOLDER}/Patent Strength.pdf
          {drug}/{GCS_IP_SUBFOLDER}/archive/Patent Strength+{timestamp}.pdf
        (the file name is config.DIMENSION_PATENT_STRENGTH)
-
-No Gemini call is made here: the text comes from the stored rationale.
 
 Usage:
     python -m IP_refactored.patent_strength.generate_report_and_rationale.generate_report --drug "Semaglutide"
@@ -22,34 +27,79 @@ Usage:
 """
 
 import argparse
+import json
 import logging
+import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
+from xml.sax.saxutils import escape
 
 import pandas as pd
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import HRFlowable, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-from xml.sax.saxutils import escape
 
 from ... import config, gcp_helpers
 from ...drug_list import resolve_drug_name
-from ...primary_market_entry_horizon.generate_report_and_rationale.generate_report import (
-    _BLUE, _LGREY, _LIGHT_BLUE, _NAVY, _WHITE, _styles, upload_report,
-)
+from ...gemini_utils import gemini_api_call
+from ...primary_market_entry_horizon.generate_report_and_rationale.generate_report import upload_report
 from ...utils import safe_name, setup_logging
 from ..scoring.constants import ACTIVE_SFS, SF_DISPLAY_NAMES, SF_WEIGHTS
 
 logger = logging.getLogger(__name__)
 
-# Score colours: 1 = very robust (green) ... 5 = weak (red), as in the sub-factor rubrics.
-_SCORE_COLORS = {1: "#0D652D", 2: "#1A7A3A", 3: "#E8A317", 4: "#D4570A", 5: "#B3261E"}
+# ── Palette / styles ──────────────────────────────────────────────────────────
+_NAVY = colors.HexColor("#1F3864")
+_BLUE = colors.HexColor("#2F5496")
+_LGREY = colors.HexColor("#F2F2F2")
+_WHITE = colors.white
+_GREY = colors.HexColor("#666666")
+
+_SCORE_CLR = {1: "#008000", 2: "#4CAF50", 3: "#CC9900", 4: "#E65100", 5: "#CC0000"}
+SCORE_LABEL = {1: "Very Robust", 2: "Robust", 3: "Moderate", 4: "Vulnerable", 5: "Highly Vulnerable"}
+
+_SF_NAMES = {
+    "sf1": ("Novelty & Non-Obviousness", "Closeness of the claimed invention to prior art."),
+    "sf2": ("Obvious-to-Combine Risk", "Likelihood of combining known elements with a reasonable expectation of success."),
+    "sf3": ("Prosecution History Vulnerability", "Extent of claim narrowing during prosecution."),
+    "sf4": ("Secondary Considerations", "Objective evidence supporting non-obviousness."),
+}
+
 _DRUG_MATCH = "REGEXP_REPLACE(LOWER(drug_name), r'\\s+', '') = REGEXP_REPLACE(LOWER(@drug_name), r'\\s+', '')"
+
+
+def _rl_styles() -> dict:
+    b = getSampleStyleSheet()
+    return {
+        "title":  ParagraphStyle("T",  parent=b["Title"],    fontSize=18, leading=22, textColor=_NAVY, spaceAfter=2),
+        "meta":   ParagraphStyle("M",  parent=b["Normal"],   fontSize=9, leading=11, textColor=_GREY, spaceAfter=6),
+        "h1":     ParagraphStyle("H1", parent=b["Heading2"], fontSize=13, leading=16, textColor=_NAVY, spaceBefore=8, spaceAfter=4),
+        "h2":     ParagraphStyle("H2", parent=b["Heading3"], fontSize=11, leading=14, textColor=_NAVY, spaceBefore=6, spaceAfter=2),
+        "h3":     ParagraphStyle("H3", parent=b["Heading4"], fontSize=10, leading=12, textColor=_BLUE, spaceBefore=4, spaceAfter=2),
+        "body":   ParagraphStyle("BD", parent=b["Normal"],   fontSize=9, leading=12, alignment=TA_JUSTIFY, spaceAfter=4),
+        "bullet": ParagraphStyle("BU", parent=b["Normal"],   fontSize=9, leading=12, spaceAfter=2, leftIndent=18, bulletIndent=6),
+        "legend": ParagraphStyle("LG", parent=b["Normal"],   fontSize=7, leading=9, textColor=_GREY, spaceAfter=1),
+        "th":     ParagraphStyle("TH", parent=b["Normal"],   fontSize=8, leading=10, textColor=_WHITE, alignment=TA_CENTER),
+        "td":     ParagraphStyle("TD", parent=b["Normal"],   fontSize=8, leading=10, alignment=TA_CENTER),
+        "tdl":    ParagraphStyle("TL", parent=b["Normal"],   fontSize=8, leading=10, alignment=TA_LEFT),
+        "footer": ParagraphStyle("FT", parent=b["Normal"],   fontSize=7, leading=9, textColor=_GREY, alignment=TA_CENTER),
+    }
+
+
+def _esc(text) -> str:
+    return escape(str(text)) if text is not None and not (isinstance(text, float) and pd.isna(text)) else ""
+
+
+def _num(value, decimals: int = 2) -> str:
+    return "N/A" if value is None or pd.isna(value) else f"{float(value):.{decimals}f}"
+
+
+def _band(value) -> int:
+    return min(5, max(1, round(float(value))))
 
 
 # ─────────────────────────────────────────────
@@ -58,144 +108,317 @@ _DRUG_MATCH = "REGEXP_REPLACE(LOWER(drug_name), r'\\s+', '') = REGEXP_REPLACE(LO
 
 def load_patent_rows(drug_name: str) -> pd.DataFrame:
     return gcp_helpers.run_query(
-        f"SELECT * FROM `{config.BQ_PATENT_STRENGTH_TABLE}` WHERE {_DRUG_MATCH} ORDER BY weighted_score, patent_number",
+        f"SELECT DISTINCT * FROM `{config.BQ_PATENT_STRENGTH_TABLE}` WHERE {_DRUG_MATCH} "
+        "ORDER BY weighted_score DESC, patent_number",
         {"drug_name": drug_name},
     )
 
 
 def load_country_rows(drug_name: str) -> pd.DataFrame:
     return gcp_helpers.run_query(
-        f"SELECT * FROM `{config.BQ_COUNTRY_SCORE_TABLE}` WHERE {_DRUG_MATCH} ORDER BY country_weight DESC, jurisdiction",
+        f"SELECT DISTINCT * FROM `{config.BQ_COUNTRY_SCORE_TABLE}` WHERE {_DRUG_MATCH} "
+        "ORDER BY country_weight DESC, jurisdiction",
         {"drug_name": drug_name},
     )
 
 
-def _num(value, decimals: int = 2) -> str:
-    return "N/A" if value is None or pd.isna(value) else f"{float(value):.{decimals}f}"
+def _first(country: pd.DataFrame, column: str):
+    """A drug-level value (the same on every country row)."""
+    if country.empty or column not in country.columns:
+        return None
+    values = country[column].dropna()
+    return values.iloc[0] if len(values) else None
 
 
-def _score_html(value, decimals: int = 2) -> str:
-    """A score coloured by its 1-5 band."""
-    if value is None or pd.isna(value):
-        return "N/A"
-    color = _SCORE_COLORS[min(5, max(1, round(float(value))))]
-    return f'<font color="{color}"><b>{float(value):.{decimals}f}</b></font>'
+def _patent_summary(row: pd.Series) -> dict:
+    return {
+        "patent_number": str(row.get("patent_number", "N/A")),
+        "patent_type":   str(row.get("patent_type", "") or "N/A"),
+        "jurisdiction":  str(row.get("jurisdiction", "N/A")),
+        "weighted":      None if pd.isna(row.get("weighted_score")) else float(row["weighted_score"]),
+        **{sf: (None if pd.isna(row.get(f"{sf}_score")) else int(row[f"{sf}_score"])) for sf in ACTIVE_SFS},
+        **{f"{sf}_reasoning": str(row.get(f"{sf}_reasoning", "") or "") for sf in ACTIVE_SFS},
+        **{f"{sf}_findings": [str(row.get(f"{sf}_key_finding_{n}", "") or "") for n in (1, 2, 3)
+                              if str(row.get(f"{sf}_key_finding_{n}", "") or "")] for sf in ACTIVE_SFS},
+    }
+
+
+def compute_statistics(patents: pd.DataFrame) -> dict:
+    """Summary statistics over the drug's scored patents (1 = very robust ... 5 = highly vulnerable)."""
+    stats = {"total_patents": len(patents), "avg_weighted": None, "score_distribution": {},
+             "sf_averages": {}, "patents": [], "highest": None, "highest_per_jurisdiction": {}}
+    stats["patents"] = [_patent_summary(r) for _, r in patents.iterrows()]
+    scored = [p for p in stats["patents"] if p["weighted"] is not None]
+    if scored:
+        stats["avg_weighted"] = round(sum(p["weighted"] for p in scored) / len(scored), 2)
+        for s in range(1, 6):
+            stats["score_distribution"][s] = sum(1 for p in scored if _band(p["weighted"]) == s)
+        stats["highest"] = max(scored, key=lambda p: p["weighted"])
+        for jur in sorted({p["jurisdiction"] for p in scored}):
+            stats["highest_per_jurisdiction"][jur] = max(
+                (p for p in scored if p["jurisdiction"] == jur), key=lambda p: p["weighted"])
+    for sf in ACTIVE_SFS:
+        values = [p[sf] for p in stats["patents"] if p[sf] is not None]
+        stats["sf_averages"][sf] = round(sum(values) / len(values), 2) if values else None
+    return stats
 
 
 # ─────────────────────────────────────────────
-# PDF
+# Narrative (Gemini)
 # ─────────────────────────────────────────────
 
-def _scorecard(final_score, n_patents: int, coverage: float, st: Dict, width: float) -> Table:
-    big = ParagraphStyle("big", alignment=TA_CENTER, leading=26)
-    rows = [
-        [Paragraph("<b>Final Patent Score</b>", st["th"]),
-         Paragraph("<b>Patents Scored</b>", st["th"]),
-         Paragraph("<b>Country Weight Covered</b>", st["th"])],
-        [Paragraph(f'<font size="22">{_score_html(final_score, 2)}</font>', big),
-         Paragraph(f'<font size="16"><b>{n_patents}</b></font>', big),
-         Paragraph(f'<font size="16"><b>{coverage:.0%}</b></font>', big)],
+def _extract_json(text: str):
+    """Parse a JSON object from a Gemini reply that may carry markdown fences."""
+    text = re.sub(r"^```(?:json)?", "", (text or "").strip()).strip()
+    text = re.sub(r"```$", "", text).strip()
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+def _fallback_narrative() -> dict:
+    return {
+        "executive_summary": "Analysis complete. See the tables below for details.",
+        "key_findings": ["See the detailed tables."],
+        "risk_highlights": "Refer to the score tables.",
+        "strength_highlights": "Refer to the score tables.",
+        "sf_analysis": "See the sub-factor scores in the tables.",
+        "highest_score_narrative": "See the score tables for details on the highest-scoring patent.",
+        "country_score_narrative": "See the country-weighted score table for details.",
+    }
+
+
+def generate_narrative(drug_name: str, stats: dict, country: pd.DataFrame) -> dict:
+    """Ask Gemini for the report's narrative sections (a fallback is used if it fails)."""
+    patent_rows = [{
+        "patent": p["patent_number"], "type": p["patent_type"], "jurisdiction": p["jurisdiction"],
+        "sf1": p["sf1"], "sf2": p["sf2"], "sf3": p["sf3"], "sf4": p["sf4"], "weighted": p["weighted"],
+        **{f"{sf}_reasoning": p[f"{sf}_reasoning"][:300] for sf in ACTIVE_SFS},
+        **{f"{sf}_key_findings": p[f"{sf}_findings"] for sf in ACTIVE_SFS},
+    } for p in stats["patents"][:15]]
+
+    highest = stats["highest"]
+    highest_text = (
+        f"Highest weighted score patent: {highest['patent_number']} (Jurisdiction: {highest['jurisdiction']}, "
+        f"Type: {highest['patent_type']}, Score: {highest['weighted']})" if highest else "N/A"
+    )
+    per_jur = "; ".join(f"{jur}: {p['patent_number']} (Score: {p['weighted']})"
+                        for jur, p in stats["highest_per_jurisdiction"].items()) or "N/A"
+    country_lines = [
+        f"  {r['jurisdiction']} ({r['country_name']}): weight={r['country_weight']}, patents={r['patent_count']}, "
+        f"avg_weighted={r['avg_weighted_score']}, country_weighted={r['country_weighted_score']}"
+        for _, r in country.iterrows()
     ]
-    table = Table(rows, colWidths=[width / 3] * 3)
+
+    prompt = f"""You are a senior pharmaceutical patent analyst writing a detailed report on the patent strength of {drug_name}.
+Based on the data below, produce a thorough analytical report. Be specific: reference patent numbers,
+jurisdictions and actual scores throughout.
+
+PORTFOLIO STATISTICS:
+- Blocking, granted patents scored: {stats['total_patents']}
+- Average weighted robustness score: {stats['avg_weighted']} (1 = Very Robust, 5 = Highly Vulnerable)
+- Drug-level average sub-factor score (avg_sf_score): {_num(_first(country, 'avg_sf_score'))}
+- Final country-weighted patent score: {_num(_first(country, 'final_patent_score'), 4)}
+- Score distribution: {json.dumps(stats['score_distribution'])}
+- Sub-factor averages: SF1 (Novelty)={stats['sf_averages']['sf1']}, SF2 (Obvious-to-Combine)={stats['sf_averages']['sf2']}, SF3 (Prosecution History)={stats['sf_averages']['sf3']}, SF4 (Secondary Considerations)={stats['sf_averages']['sf4']}
+- {highest_text}
+- Highest score patent per jurisdiction: {per_jur}
+
+COUNTRY-WEIGHTED SCORES:
+{chr(10).join(country_lines) or 'N/A'}
+
+PATENT-LEVEL DATA (JSON):
+{json.dumps(patent_rows, indent=1)}
+
+Respond ONLY with a valid JSON object (no markdown fences):
+{{
+  "executive_summary": "<5-8 sentences giving a thorough overview of the portfolio's legal robustness and overall risk posture>",
+  "key_findings": ["<detailed finding 1 with patent numbers>", "<finding 2>", "<finding 3>", "<finding 4>", "<finding 5>", "<finding 6>"],
+  "risk_highlights": "<4-6 sentences on the highest-risk patents, their specific vulnerabilities and why they are exposed to challenge; reference patent numbers and scores>",
+  "strength_highlights": "<4-6 sentences on the most robust patents, their defensive strengths and what makes them resilient; reference patent numbers and scores>",
+  "sf_analysis": "<4-6 sentences on sub-factor trends: which sub-factor is weakest / strongest overall, and any pattern by patent type or jurisdiction>",
+  "highest_score_narrative": "<4-6 sentences on the patent with the highest weighted score: why it scores so high, its core inventive weaknesses, the legal risks it faces, and the implications for challengers or defenders>",
+  "country_score_narrative": "<3-5 sentences on the country-weighted scores: which jurisdictions drive the risk, how the country weights affect the overall score, and the geographic implications>"
+}}"""
+    try:
+        parsed = _extract_json(gemini_api_call(prompt, config.GEMINI_TEXT_MODEL, temperature=0.3))
+    except Exception:
+        logger.exception("[REPORT] Gemini narrative failed for %r — using the fallback text", drug_name)
+        parsed = None
+    return {**_fallback_narrative(), **(parsed or {})}
+
+
+# ─────────────────────────────────────────────
+# PDF building blocks
+# ─────────────────────────────────────────────
+
+def _info_table(items: list, st: dict, width: float) -> Table:
+    """A two-column label / value box."""
+    rows = [[Paragraph(f"<b>{_esc(label)}</b>", st["tdl"]), Paragraph(value, st["td"])] for label, value in items]
+    table = Table(rows, colWidths=[width * 0.38, width * 0.62])
     table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), _NAVY),
-        ("BACKGROUND", (0, 1), (-1, 1), _LIGHT_BLUE),
-        ("BOX", (0, 0), (-1, -1), 0.75, _BLUE),
-        ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#C0C0C0")),
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#E8EDF3")),
+        ("BOX", (0, 0), (-1, -1), 0.5, _BLUE),
+        ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 1), (-1, 1), 5),
-        ("BOTTOMPADDING", (0, 1), (-1, 1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
     ]))
     return table
 
 
-def _country_table(country: pd.DataFrame, st: Dict, width: float) -> Table:
-    th, td, tl = st["th"], st["td"], st["tdl"]
-    rows = [[Paragraph(f"<b>{h}</b>", th) for h in
-             ("Jurisdiction", "Weight", "Patents", "Avg Weighted Score", "Country Score")]]
-    for _, r in country.iterrows():
-        rows.append([
-            Paragraph(escape(f"{r['jurisdiction']} - {r['country_name']}"), tl),
-            Paragraph(_num(r["country_weight"]), td),
-            Paragraph(str(int(r["patent_count"])), td),
-            Paragraph(_score_html(r["avg_weighted_score"]), td),
-            Paragraph(_num(r["country_weighted_score"], 4), td),
-        ])
-    table = Table(rows, colWidths=[width * w for w in (0.34, 0.12, 0.12, 0.22, 0.20)], repeatRows=1)
+def _data_table(headers: list, rows: list, col_widths: list, st: dict, score_cols: tuple = (), left_cols: tuple = ()) -> Table:
+    """A table with a navy header; columns in *score_cols* are coloured by their 1-5 band."""
+    out = [[Paragraph(f"<b>{h}</b>", st["th"]) for h in headers]]
+    for data_row in rows:
+        cells = []
+        for ci, value in enumerate(data_row):
+            text = "N/A" if value is None or (not isinstance(value, str) and pd.isna(value)) else str(value)
+            style = st["tdl"] if ci in left_cols else st["td"]
+            if ci in score_cols and text != "N/A":
+                try:
+                    cells.append(Paragraph(f'<font color="{_SCORE_CLR[_band(value)]}"><b>{_esc(text)}</b></font>', style))
+                    continue
+                except (ValueError, TypeError):
+                    pass
+            cells.append(Paragraph(_esc(text), style))
+        out.append(cells)
+    table = Table(out, colWidths=col_widths, repeatRows=1)
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), _NAVY),
         ("BOX", (0, 0), (-1, -1), 0.5, _BLUE),
-        ("INNERGRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#D0D0D0")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [_WHITE, _LGREY]),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("TOPPADDING", (0, 0), (-1, -1), 2),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [_WHITE, _LGREY]),
     ]))
     return table
 
 
-def _patent_table(patents: pd.DataFrame, st: Dict, width: float) -> Table:
-    th, td, tl = st["th"], st["td"], st["tdl"]
-    headers = ["Patent", "Jur", "Type", *[sf.upper() for sf in ACTIVE_SFS], "Weighted"]
-    rows = [[Paragraph(f"<b>{h}</b>", th) for h in headers]]
-    for _, r in patents.iterrows():
-        rows.append([
-            Paragraph(escape(str(r["patent_number"])), tl),
-            Paragraph(escape(str(r["jurisdiction"])), td),
-            Paragraph(escape(str(r["patent_type"] or "")), td),
-            *[Paragraph(_score_html(r[f"{sf}_score"], 0), td) for sf in ACTIVE_SFS],
-            Paragraph(_score_html(r["weighted_score"]), td),
-        ])
-    table = Table(rows, colWidths=[width * w for w in (0.24, 0.07, 0.21, 0.09, 0.09, 0.09, 0.09, 0.12)], repeatRows=1)
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), _NAVY),
-        ("BOX", (0, 0), (-1, -1), 0.5, _BLUE),
-        ("INNERGRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#D0D0D0")),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 2),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [_WHITE, _LGREY]),
-    ]))
-    return table
+def _paragraphs(text: str, style) -> list:
+    """One Paragraph per non-empty line of *text*."""
+    return [Paragraph(_esc(line.strip()), style) for line in (text or "").split("\n") if line.strip()]
 
 
 def build_report(drug_name: str, patents: pd.DataFrame, country: pd.DataFrame, output_path: str) -> str:
-    """Write the 2-page PDF to *output_path* and return its resolved path."""
-    st = _styles()
-    title = f"{drug_name} - {config.DIMENSION_PATENT_STRENGTH}"
+    """Write the PDF to *output_path* and return its resolved path."""
+    stats = compute_statistics(patents)
+    logger.info("[REPORT] %s: generating the narrative with Gemini ...", drug_name)
+    narrative = generate_narrative(drug_name, stats, country)
+
+    st = _rl_styles()
+    title = f"{config.DIMENSION_PATENT_STRENGTH} - {drug_name}"
     doc = SimpleDocTemplate(
         output_path, pagesize=A4,
-        topMargin=14 * mm, bottomMargin=10 * mm, leftMargin=17 * mm, rightMargin=17 * mm,
+        topMargin=18 * mm, bottomMargin=14 * mm, leftMargin=20 * mm, rightMargin=20 * mm,
         title=title, author="IP Pipeline",
     )
-    width = A4[0] - 34 * mm
-    final_score = country["final_patent_score"].iloc[0] if not country.empty else None
+    width = A4[0] - 40 * mm
+    final_score = _first(country, "final_patent_score")
+    avg_sf_score = _first(country, "avg_sf_score")
+    if avg_sf_score is None and not country.empty:  # rows written before avg_sf_score existed
+        avg_sf_score = country["avg_weighted_score"].dropna().mean()
+    rationale = _first(country, "rationale")
     coverage = float(country.loc[country["patent_count"] > 0, "country_weight"].sum()) if not country.empty else 0.0
-    rationale = next((str(r).strip() for r in country.get("rationale", []) if isinstance(r, str) and r.strip()), "")
 
     story: list = [
-        Paragraph(escape(title), st["title"]),
-        Paragraph(
-            f"Analysis Date: {datetime.now().strftime('%d-%b-%Y')}&nbsp;&nbsp;|&nbsp;&nbsp;"
-            "Blocking, granted patents scored on four legal-robustness sub-factors "
-            "(1 = very robust, 5 = weak)", st["meta"]),
-        HRFlowable(width="100%", thickness=1.5, color=_BLUE, spaceAfter=5),
-        _scorecard(final_score, len(patents), coverage, st, width),
-        Spacer(1, 3 * mm),
-        Paragraph("Country-wise Scores", st["h1"]),
-        _country_table(country, st, width),
-        Spacer(1, 3 * mm),
-        Paragraph("Rationale", st["h1"]),
-        Paragraph(escape(rationale or "No rationale provided."), st["body"]),
-        PageBreak(),
-        Paragraph("Patent Scores", st["h1"]),
-        HRFlowable(width="100%", thickness=1.5, color=_BLUE, spaceAfter=3),
-        _patent_table(patents, st, width),
-        Spacer(1, 2 * mm),
-        Paragraph(" &nbsp;|&nbsp; ".join(
-            f"<b>{sf.upper()}</b> {SF_DISPLAY_NAMES[sf].split('(', 1)[1].rstrip(')')} ({SF_WEIGHTS[sf]:.0%})"
-            for sf in ACTIVE_SFS), st["legend"]),
+        Paragraph(_esc(title), st["title"]),
+        Paragraph(f"Generated {datetime.now().strftime('%B %d, %Y')}&nbsp;&nbsp;•&nbsp;&nbsp;"
+                  f"{stats['total_patents']} Blocking Patents&nbsp;&nbsp;•&nbsp;&nbsp;"
+                  f"{len(country)} Jurisdiction(s)", st["meta"]),
+        HRFlowable(width="100%", thickness=1.5, color=_NAVY, spaceAfter=8),
     ]
+
+    # Executive Summary
+    story += [Paragraph("Executive Summary", st["h1"]), *_paragraphs(narrative["executive_summary"], st["body"]), Spacer(1, 6)]
+
+    # Portfolio Overview
+    overview = [
+        ("Drug", _esc(drug_name)),
+        ("Total Patents Analysed", str(stats["total_patents"])),
+        ("Final Patent Score (country-weighted)", _num(final_score, 4)),
+        ("Drug-level Score (avg_sf_score)", f"{_num(avg_sf_score)} / 5.0"),
+        ("Average Weighted Score", f"{_num(stats['avg_weighted'])} / 5.0"),
+        ("Country Weight Covered", f"{coverage:.0%}"),
+    ]
+    for sf in ACTIVE_SFS:
+        if stats["sf_averages"][sf] is not None:
+            overview.append((f"Avg {SF_DISPLAY_NAMES[sf]}", f"{stats['sf_averages'][sf]} / 5.0"))
+    dist = [f"{SCORE_LABEL[s]}: {n}" for s, n in stats["score_distribution"].items() if n]
+    if dist:
+        overview.append(("Score Distribution", "; ".join(dist)))
+    story += [Paragraph("Portfolio Overview", st["h1"]), _info_table(overview, st, width), Spacer(1, 8)]
+
+    # Key Findings
+    story.append(Paragraph("Key Findings", st["h1"]))
+    story += [Paragraph(f"&bull; {_esc(f)}", st["bullet"]) for f in narrative["key_findings"]]
+    story.append(Spacer(1, 6))
+
+    # Patent Score Summary
+    story.append(Paragraph("Patent Score Summary", st["h1"]))
+    summary_rows = [[p["patent_number"], p["jurisdiction"], p["patent_type"], p["sf1"], p["sf2"], p["sf3"], p["sf4"], p["weighted"]]
+                    for p in stats["patents"]]
+    story += [_data_table(["Patent No.", "Jur", "Type", "SF1", "SF2", "SF3", "SF4", "Weighted"], summary_rows,
+                          [width * w for w in (0.22, 0.08, 0.22, 0.09, 0.09, 0.09, 0.09, 0.12)], st,
+                          score_cols=(3, 4, 5, 6, 7), left_cols=(0,)), Spacer(1, 8)]
+
+    # Country-Weighted Scores
+    if not country.empty:
+        story += [PageBreak(), Paragraph("Country-Weighted Patent Scores", st["h1"]),
+                  Paragraph("Jurisdiction-level weighted scores from the patent strength country score table.", st["body"]),
+                  Paragraph(f"<b>Final Patent Score (Drug Total): {_num(final_score, 4)}</b>", st["body"]),
+                  Paragraph(f"<b>Drug-level Score (avg_sf_score): {_num(avg_sf_score)}</b> — the mean of the "
+                            "jurisdictions' average weighted scores.", st["body"])]
+        country_rows = [[r["jurisdiction"], r["country_name"], r["country_weight"], r["patent_count"],
+                         _num(r["avg_weighted_score"]), _num(r["country_weighted_score"], 4)] for _, r in country.iterrows()]
+        story += [_data_table(["Jurisdiction", "Country", "Weight", "# Patents", "Avg Weighted Score", "Country Weighted Score"],
+                              country_rows, [width * w for w in (0.12, 0.22, 0.10, 0.10, 0.20, 0.26)], st, score_cols=(4,)),
+                  Spacer(1, 6),
+                  Paragraph("<b>Geographic Risk Analysis</b>", st["h2"]),
+                  *_paragraphs(narrative["country_score_narrative"], st["body"]), Spacer(1, 8)]
+
+    # Highest-risk patent
+    highest = stats["highest"]
+    if highest:
+        label = SCORE_LABEL[_band(highest["weighted"])]
+        story += [Paragraph("Highest-Risk Patent", st["h1"]), _info_table([
+            ("Patent Number", _esc(highest["patent_number"])),
+            ("Patent Type", _esc(highest["patent_type"])),
+            ("Jurisdiction", _esc(highest["jurisdiction"])),
+            ("Weighted Score", f"{highest['weighted']} / 5.0 — {label}"),
+            *[(f"SF{i} ({_SF_NAMES[sf][0]})", str(highest[sf])) for i, sf in enumerate(ACTIVE_SFS, 1)],
+        ], st, width), Spacer(1, 4), *_paragraphs(narrative["highest_score_narrative"], st["body"]), Spacer(1, 6)]
+
+    # Sub-Factor Analysis
+    story += [Paragraph("Sub-Factor Analysis", st["h1"]), *_paragraphs(narrative["sf_analysis"], st["body"])]
+
+    # Risk & Strength
+    story += [Paragraph("Risk &amp; Strength Analysis", st["h1"]),
+              Paragraph('<font color="#CC0000"><b>Highest Risk Patents</b></font>', st["h2"]),
+              *_paragraphs(narrative["risk_highlights"], st["body"]),
+              Paragraph('<font color="#008000"><b>Most Robust Patents</b></font>', st["h2"]),
+              *_paragraphs(narrative["strength_highlights"], st["body"])]
+
+    # Drug-Level Analysis = the stored rationale
+    story += [PageBreak(), Paragraph("Drug-Level Analysis", st["h1"]), Paragraph(_esc(drug_name), st["h3"]),
+              *_paragraphs(rationale or "No rationale provided.", st["body"]), Spacer(1, 6)]
+
+    # Framework + legend
+    story.append(Paragraph("Sub-Factor Scoring Framework", st["h1"]))
+    framework = [[str(i), _SF_NAMES[sf][0], _SF_NAMES[sf][1], f"{SF_WEIGHTS[sf]:.0%}"] for i, sf in enumerate(ACTIVE_SFS, 1)]
+    story += [_data_table(["SF #", "Name", "Description", "Weight"], framework,
+                          [width * w for w in (0.07, 0.25, 0.58, 0.10)], st, left_cols=(1, 2)),
+              Spacer(1, 8),
+              Paragraph('<font color="#666666"><b>Score Legend:</b> ' + "  |  ".join(f"{k} = {v}" for k, v in SCORE_LABEL.items())
+                        + "</font>", st["legend"]),
+              Spacer(1, 10),
+              Paragraph("<i>This report was auto-generated from the Patent Strength scoring output using Gemini.</i>", st["footer"])]
+
     doc.build(story)
     return str(Path(output_path).resolve())
 
@@ -204,7 +427,7 @@ def build_report(drug_name: str, patents: pd.DataFrame, country: pd.DataFrame, o
 # Per-drug run
 # ─────────────────────────────────────────────
 
-def generate_report(drug_name: str, output_dir: Path, upload: bool = True) -> Dict:
+def generate_report(drug_name: str, output_dir: Path, upload: bool = True) -> dict:
     """Build (and optionally upload) the report for one drug.
     Returns {"drug_name", "local_path", "gcs_uri", "archive_uri"}."""
     patents, country = load_patent_rows(drug_name), load_country_rows(drug_name)
@@ -225,7 +448,7 @@ def generate_report(drug_name: str, output_dir: Path, upload: bool = True) -> Di
     return {"drug_name": drug_name, "local_path": local_path, "gcs_uri": gcs_uri, "archive_uri": archive_uri}
 
 
-def report_for_drug(drug_name: str, upload: bool = True) -> Dict:
+def report_for_drug(drug_name: str, upload: bool = True) -> dict:
     """generate_report() with a temporary local copy (the report lives in GCS).
     Called at the end of every patent_strength run."""
     with tempfile.TemporaryDirectory() as tmp:

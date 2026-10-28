@@ -24,6 +24,8 @@ from .constants import (
     SF2_SECTIONS,
     SF3_SECTIONS,
     SF4_SECTIONS,
+    SF_DISPLAY_NAMES,
+    SF_SCORE_LABELS,
     SF_WEIGHTS,
 )
 from .prompts import (
@@ -180,6 +182,55 @@ def compute_weighted_score(result: dict) -> float | None:
     return round(sum(s * w for s, w in valid) / sum(w for _, w in valid), 2)
 
 
+def _first_sentence(text: str) -> str:
+    text = " ".join(str(text or "").split())
+    end = text.find(". ")
+    return text[:end + 1] if end > 0 else text
+
+
+def _sf_line(sf_key: str, sf: dict) -> str:
+    """'SF2 (Obvious-to-Combine Risk) 5/5 - <label>: <why this score>' for one scored sub-factor."""
+    why = sf.get("score_reason") or _first_sentence(sf.get("reasoning")) or (sf.get("key_findings") or [""])[0]
+    label = SF_SCORE_LABELS[sf_key].get(sf["score"], "")
+    return f"{SF_DISPLAY_NAMES[sf_key]} {sf['score']}/5 - {label}" + (f": {why}" if why else "")
+
+
+def summary_fields(result: dict) -> dict:
+    """core_inventive_step / key_vulnerabilities / key_strengths for one scored patent.
+
+    A value already in *result* (e.g. from generate_final_summary) is kept; any that is
+    missing is built from the sub-factor results:
+      core_inventive_step  — SF1's account of the inventive step (it evaluates exactly that)
+      key_vulnerabilities  — the weak sub-factors (score >= 4); if none, the weakest one when >= 3
+      key_strengths        — the robust sub-factors (score <= 2); if none, the strongest one when <= 3
+    """
+    scored = {k: result[k] for k in SF_WEIGHTS if result.get(k, {}).get("score") is not None}
+
+    def lines(keys) -> str:
+        return " ".join(_sf_line(k, scored[k]) + "." if not _sf_line(k, scored[k]).endswith(".") else _sf_line(k, scored[k])
+                        for k in keys)
+
+    weak = [k for k in scored if scored[k]["score"] >= 4]
+    if not weak and scored:
+        worst = max(scored, key=lambda k: scored[k]["score"])
+        weak = [worst] if scored[worst]["score"] >= 3 else []
+    strong = [k for k in scored if scored[k]["score"] <= 2]
+    if not strong and scored:
+        best = min(scored, key=lambda k: scored[k]["score"])
+        strong = [best] if scored[best]["score"] <= 3 else []
+
+    sf1 = scored.get("sf1", {})
+    derived = {
+        "core_inventive_step": _first_sentence(sf1.get("reasoning")) or sf1.get("score_reason", "")
+                               or (sf1.get("key_findings") or [""])[0],
+        "key_vulnerabilities": lines(sorted(weak, key=lambda k: -scored[k]["score"])) if weak
+                               else ("No sub-factor scored as a vulnerability." if scored else ""),
+        "key_strengths":       lines(sorted(strong, key=lambda k: scored[k]["score"])) if strong
+                               else ("No sub-factor scored as a clear strength." if scored else ""),
+    }
+    return {field: (str(result.get(field) or "").strip() or derived[field]) for field in derived}
+
+
 def generate_final_summary(row, result: dict) -> dict:
     """Ask Gemini for a short narrative summary of one scored patent."""
     drug = str(row.get("Drug Name", "")).strip()
@@ -256,6 +307,10 @@ def compute_country_wise_scores(df_shortlist: pd.DataFrame, results: list[dict])
             drug_entry["final_patent_score"] += country_score
 
         drug_entry["final_patent_score"] = round(drug_entry["final_patent_score"], 4)
+        # Drug-level score: the mean of the drug's jurisdictions' avg_weighted_score.
+        averages = [j["avg_weighted_score"] for j in drug_entry["jurisdictions"].values()
+                    if j["avg_weighted_score"] is not None]
+        drug_entry["avg_sf_score"] = round(sum(averages) / len(averages), 2) if averages else None
         output["drug_details"][drug] = drug_entry
 
     return output

@@ -20,7 +20,7 @@ from ...primary_market_entry_horizon.bq_utils import load_master_table
 from ...utils import bq_safe_name
 from .checkpoint import checkpoint_key
 from ..scoring.constants import ACTIVE_SFS, JURISDICTION_LABELS, SF_SCORE_LABELS
-from ..scoring.scoring import compute_weighted_score, get_country_weight, infer_jurisdiction
+from ..scoring.scoring import compute_weighted_score, get_country_weight, infer_jurisdiction, summary_fields
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,7 @@ COUNTRY_SCORE_SCHEMA = [
     bigquery.SchemaField("avg_weighted_score", "FLOAT64"),
     bigquery.SchemaField("country_weighted_score", "FLOAT64"),
     bigquery.SchemaField("final_patent_score", "FLOAT64"),
+    bigquery.SchemaField("avg_sf_score", "FLOAT64"),
     bigquery.SchemaField("rationale", "STRING"),
     bigquery.SchemaField("updated_at", "STRING"),
 ]
@@ -118,11 +119,9 @@ def _build_strength_rows(df_shortlist: pd.DataFrame, results: list[dict], drug: 
             "patent_type": str(row_data.get("Step 1 Claim Category", "")).strip(),
             "jurisdiction": jurisdiction,
             "country_weight": get_country_weight(jurisdiction),
-            # Summary generation is skipped — narrative columns stay empty.
-            "core_inventive_step": "",
             "weighted_score": compute_weighted_score(result),
-            "key_vulnerabilities": "",
-            "key_strengths": "",
+            # Built from the sub-factor results (no separate summary call is made).
+            **summary_fields(result),
             "filing_date": str(row_data.get("Filing Date", "")),
             "grant_date": str(row_data.get("Grant Date", "")),
             "created_at": created_at,
@@ -151,6 +150,7 @@ def _build_country_rows(country_scores: dict, drug: str, updated_at: str, ration
                 "avg_weighted_score": jdata["avg_weighted_score"],
                 "country_weighted_score": round(jdata["country_weighted_score"], 4),
                 "final_patent_score": round(final_score, 4),
+                "avg_sf_score": drug_entry["avg_sf_score"],  # drug-level, repeated on each of its rows
                 "rationale": rationale,  # the drug's summary, repeated on each of its rows
                 "updated_at": updated_at,
             })

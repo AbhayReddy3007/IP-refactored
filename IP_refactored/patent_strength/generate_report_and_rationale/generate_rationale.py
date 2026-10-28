@@ -1,10 +1,10 @@
 """
 generate_rationale.py
 ─────────────────────
-The "rationale" of a drug's patent strength: a short summary (at most
-RATIONALE_MAX_WORDS words) written from the drug's scores. It is stored in the
-`rationale` column of config.BQ_COUNTRY_SCORE_TABLE (the same text on every row of
-the drug) and reused by generate_report.py.
+The "rationale" of a drug's patent strength: a summary of the drug written from its
+scores (no length limit). It is stored in the `rationale` column of
+config.BQ_COUNTRY_SCORE_TABLE (the same text on every row of the drug) and shown
+in the report as the drug-level analysis.
 
 Gemini writes the summary from the scores; if that call fails the rationale is
 built directly from the same numbers, so a drug always gets one.
@@ -13,7 +13,6 @@ built directly from the same numbers, so a drug always gets one.
 """
 
 import logging
-import re
 
 import pandas as pd
 
@@ -24,20 +23,19 @@ from ..scoring.scoring import compute_weighted_score, infer_jurisdiction
 
 logger = logging.getLogger(__name__)
 
-RATIONALE_MAX_WORDS = 200
-
-RATIONALE_PROMPT = """You are a senior pharmaceutical patent analyst. Write a short summary of the patent strength of {drug} from the data below.
+RATIONALE_PROMPT = """You are a senior pharmaceutical patent analyst. Write the drug-level analysis of the patent strength of {drug} from the data below.
 
 Scoring: every patent is scored 1-5 (1 = very robust, hard to challenge; 5 = weak, an exceptional opportunity for a challenger) on four sub-factors:
 SF1 Novelty & Non-Obviousness (40%), SF2 Obvious-to-Combine Risk (30%), SF3 Prosecution History Vulnerability (20%), SF4 Secondary Considerations (10%).
-A patent's weighted score combines them; a country's score is the average of its patents times the country weight, and the final patent score is the sum over countries.
+A patent's weighted score combines them; a country's score is the average of its patents times the country weight, and the final patent score is the sum over countries. The drug's average sub-factor score (avg_sf_score) is the mean of its countries' average weighted scores.
 
 DATA
 {data}
 
 Rules:
-- At most {max_words} words, in plain prose (no bullet points, headings or markdown).
-- Say how strong the portfolio is overall, which jurisdictions carry the score, which patents are the most and least robust, and which sub-factor is the main weakness.
+- Plain prose (no bullet points, headings or markdown). Be complete: finish every sentence and cover the whole picture.
+- Say how strong the portfolio is overall, which jurisdictions carry the score, which patents are the most and least robust, and which sub-factor is the main weakness and why it matters.
+- Reference specific patent numbers, jurisdictions and scores.
 - Use only the data above; do not invent facts."""
 
 
@@ -77,7 +75,10 @@ def sub_factor_averages(lines: list) -> dict:
 
 
 def _data_block(lines: list, country_entry: dict) -> str:
-    rows = [f"Final patent score: {_fmt(country_entry['final_patent_score'])} ({len(lines)} patents scored)"]
+    rows = [
+        f"Final patent score: {_fmt(country_entry['final_patent_score'])} ({len(lines)} patents scored)",
+        f"avg_sf_score (drug-level average of the country averages): {_fmt(country_entry.get('avg_sf_score'))}",
+    ]
     for jurisdiction, jdata in sorted(
         country_entry["jurisdictions"].items(), key=lambda item: (-item[1]["country_weight"], item[0])
     ):
@@ -101,17 +102,6 @@ def _data_block(lines: list, country_entry: dict) -> str:
 # Text
 # ─────────────────────────────────────────────
 
-def limit_words(text: str, max_words: int = RATIONALE_MAX_WORDS) -> str:
-    """Collapse whitespace and cut *text* to at most *max_words* words, at a sentence end when possible."""
-    text = re.sub(r"\s+", " ", text or "").strip()
-    words = text.split(" ")
-    if len(words) <= max_words:
-        return text
-    cut = " ".join(words[:max_words])
-    last_stop = cut.rfind(". ")
-    return cut[:last_stop + 1] if last_stop > len(cut) // 2 else cut.rstrip(",;:") + "…"
-
-
 def _fallback_rationale(drug: str, lines: list, country_entry: dict) -> str:
     scored = [p for p in lines if p["weighted"] is not None]
     parts = [f"{drug}: final patent score {_fmt(country_entry['final_patent_score'])} from {len(lines)} blocking, granted patent(s)."]
@@ -130,20 +120,18 @@ def _fallback_rationale(drug: str, lines: list, country_entry: dict) -> str:
     if averages:
         worst = max(averages, key=averages.get)
         parts.append(f"Weakest sub-factor on average: {SF_DISPLAY_NAMES[worst]} ({_fmt(averages[worst])}; 1 = robust, 5 = weak).")
-    return limit_words(" ".join(parts))
+    return " ".join(parts)
 
 
 def rationale_for_drug(drug: str, df_shortlist: pd.DataFrame, results: list, country_scores: dict) -> str:
-    """The drug's rationale (<= RATIONALE_MAX_WORDS words)."""
+    """The drug's rationale (no length limit)."""
     country_entry = next(iter(country_scores["drug_details"].values()), None)
     if country_entry is None:
         return ""
     lines = patent_lines(df_shortlist, results)
-    prompt = RATIONALE_PROMPT.format(
-        drug=drug, data=_data_block(lines, country_entry), max_words=RATIONALE_MAX_WORDS,
-    )
+    prompt = RATIONALE_PROMPT.format(drug=drug, data=_data_block(lines, country_entry))
     try:
-        text = limit_words(gemini_api_call(prompt, config.GEMINI_TEXT_MODEL, temperature=0.2, max_output_tokens=1024))
+        text = gemini_api_call(prompt, config.GEMINI_TEXT_MODEL, temperature=0.2).strip()
         if text:
             return text
         logger.warning("[RATIONALE] Gemini returned nothing for %r — using the score-based summary", drug)
