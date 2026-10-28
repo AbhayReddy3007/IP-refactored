@@ -35,6 +35,7 @@ from google.cloud import bigquery
 from .. import config
 from .. import gcp_utils, gcp_helpers
 from ..delete_rows import delete_drug_rows
+from ..gemini_utils import get_gemini_call_stats
 from ..utils import bq_safe_name, safe_name, stringify_cell
 
 logger = logging.getLogger(__name__)
@@ -256,6 +257,18 @@ def append_gemini_stats_to_bigquery(
     table_id = config.GEMINI_STATS_TABLE
     gcp_utils.get_bq_client().load_table_from_json(rows, table_id, job_config=job_config).result()
     logger.info("Appended %d Gemini stats row(s) for %s/%s to %s", len(rows), molecule_name, dimension_name, table_id)
+
+
+def save_gemini_stats(drug_name: str, dimension_name: str, run_status: str,
+                      error: Optional[str], elapsed: float) -> None:
+    """Write this run's Gemini usage (gemini_utils counters) to config.GEMINI_STATS_TABLE; never raises."""
+    try:
+        append_gemini_stats_to_bigquery(
+            drug_name, dimension_name, get_gemini_call_stats(),
+            run_status, error_message=error, execution_time_seconds=round(elapsed, 3),
+        )
+    except Exception:
+        logger.exception("Could not write Gemini stats for %s/%s", drug_name, dimension_name)
 
 
 def publish_table(df: pd.DataFrame, table_id: str, drug_name: str, run_ts: str) -> Dict[str, Optional[str]]:

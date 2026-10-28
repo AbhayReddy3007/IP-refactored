@@ -31,9 +31,9 @@ from .. import config
 from ..blocking_analysis import run_blocking_analysis
 from ..drug_list import resolve_drug_name
 from ..chunking.indexer import get_or_create_collection, indexer as run_indexer
-from ..gemini_utils import get_gemini_call_stats, reset_gemini_call_stats
+from ..gemini_utils import reset_gemini_call_stats
 from ..patent_filter import patent_filter
-from .bq_utils import append_gemini_stats_to_bigquery, publish_table
+from .bq_utils import publish_table, save_gemini_stats
 from .score_calculation import (
     assign_patent_phases,
     calculate_scores,
@@ -85,17 +85,6 @@ def publish_loe_tables(patents: List[Dict], drug_name: str, run_ts: str) -> Dict
     return outputs
 
 
-def _save_gemini_stats(drug_name: str, run_status: str, error: Optional[str], elapsed: float) -> None:
-    """Write this drug's Gemini usage to config.GEMINI_STATS_TABLE; never raises."""
-    try:
-        append_gemini_stats_to_bigquery(
-            drug_name, config.GEMINI_STATS_DIMENSION, get_gemini_call_stats(),
-            run_status, error_message=error, execution_time_seconds=round(elapsed, 3),
-        )
-    except Exception:
-        logger.exception("[HORIZON] Could not write Gemini stats for %r", drug_name)
-
-
 async def primary_market_entry_horizon(drug_name: str, reindex: bool = False) -> dict:
     """
     Full primary-market-entry-horizon pipeline for ONE drug, plus a Gemini usage
@@ -114,7 +103,8 @@ async def primary_market_entry_horizon(drug_name: str, reindex: bool = False) ->
         run_status, error = "failed", str(e)
         raise
     finally:
-        _save_gemini_stats(resolve_drug_name(drug_name), run_status, error, time.time() - t0)
+        save_gemini_stats(resolve_drug_name(drug_name), config.GEMINI_STATS_DIMENSION,
+                          run_status, error, time.time() - t0)
 
 
 async def _run_horizon(drug_name: str, reindex: bool = False) -> dict:

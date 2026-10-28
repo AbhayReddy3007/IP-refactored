@@ -31,10 +31,9 @@ GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 # BigQuery
 # ─────────────────────────────────────────────
 
-# DIM_SCORES_TABLE is a bare table name, combined with PROJECT_ID / BQ_DATASET_ID
-# by gcp_utils. Every other BigQuery table is configured as ONE fully-qualified ID.
-BQ_DATASET_ID    = os.getenv("BQ_DATASET_ID", "cognito_prod_datamart")
-DIM_SCORES_TABLE = os.getenv("DIM_SCORES_TABLE", "dimension_scores")
+# Every BigQuery table / view is defined in the "BigQuery tables" section at the
+# end of this file.
+BQ_DATASET_ID = os.getenv("BQ_DATASET_ID", "cognito_prod_datamart")
 
 # ─────────────────────────────────────────────
 # GCS — bucket / paths
@@ -98,9 +97,8 @@ GEMINI_SERVICE_TIER       = os.getenv("GEMINI_SERVICE_TIER", "")
 # without thinking levels (e.g. gemini-2.5-flash).
 GEMINI_THINKING_LEVEL     = os.getenv("GEMINI_THINKING_LEVEL", "")
 
-# Per-run Gemini usage (one row per model per drug): fully-qualified BigQuery table.
-GEMINI_STATS_TABLE        = os.getenv("GEMINI_STATS_TABLE", f"{PROJECT_ID}.{BQ_DATASET_ID}.gemini_stats")
-GEMINI_STATS_DIMENSION    = os.getenv("GEMINI_STATS_DIMENSION", "Primary Market Entry Horizon")
+# Dimension name recorded in the per-run Gemini usage table (GEMINI_STATS_TABLE).
+GEMINI_STATS_DIMENSION   = os.getenv("GEMINI_STATS_DIMENSION", "Primary Market Entry Horizon")
 
 # PDFs are sent inline to Gemini (Vertex has no Files API), so this caps the PDF size.
 GEMINI_FILE_SIZE_LIMIT_MB = int(os.getenv("GEMINI_FILE_SIZE_LIMIT_MB", "50"))
@@ -156,25 +154,6 @@ PUBMED_EMAIL   = os.getenv("PUBMED_EMAIL", "patent_analysis@example.com")
 NCBI_API_KEY   = os.getenv("NCBI_API_KEY", "")
 
 # ─────────────────────────────────────────────
-# Primary market entry horizon — phase fetching (score_calculation/phase_fetcher.py)
-# ─────────────────────────────────────────────
-
-# Fully-qualified (project.dataset.table) BigQuery table for clinical-trial
-# phase data (lives in a separate GCP project from everything else).
-CLINICAL_EFFICACY_TABLE = os.getenv("CLINICAL_EFFICACY_TABLE", "cognito-dev-380506.data_mart.clinical_efficacy_glp1")
-
-# Secondary phase source ("the drug list table") — fully-qualified BigQuery
-# view with per-drug details (phase, LOE date, geography).
-DRUG_DETAILS_TABLE = os.getenv("DRUG_DETAILS_TABLE", "cognito-dev-380506.data_mart.vw_drug_details_full")
-
-# ─────────────────────────────────────────────
-# Primary market entry horizon — approval date fetching (score_calculation/approval_date_fetcher.py)
-# ─────────────────────────────────────────────
-
-# Fully-qualified brands table (project.dataset.table); empty = brand lookup disabled.
-BQ_BRANDS_TABLE = os.getenv("BQ_BRANDS_TABLE", "")
-
-# ─────────────────────────────────────────────
 # Cloud Run Jobs — sharding (run_ip_dimension.py)
 # ─────────────────────────────────────────────
 # Provided automatically by Cloud Run Jobs for each task in the job; default
@@ -192,27 +171,6 @@ CLOUD_RUN_TASK_COUNT = int(os.getenv("CLOUD_RUN_TASK_COUNT", "1"))
 # Leave unset / empty to process every drug found in GCS (the default,
 # sharded-discovery behaviour).
 DRUG_NAME = os.getenv("DRUG_NAME", "")
-
-# ─────────────────────────────────────────────
-# Patent-master filter (patent_filter.py)
-# ─────────────────────────────────────────────
-# Fully-qualified BigQuery table (project.dataset.table) listing every
-# patent known for each molecule, with its download/review status and a
-# confidence score. patent_filter() only returns GCS PDFs whose patent
-# number has a row here with patent_status = 'PDF Downloaded' and
-# confidence > 0.3 — so indexing, analysis, and the output tables are all
-# restricted to this approved set, for either a single molecule or (when
-# no molecule is given) every molecule in the table.
-PATENT_MASTER_TABLE = os.getenv("PATENT_MASTER_TABLE", "cognito-dev-380506.stage.patent_master")
-
-# ─────────────────────────────────────────────
-# Drug-list discovery via BigQuery (drug_list.py)
-# ─────────────────────────────────────────────
-# Fully-qualified BigQuery view (project.dataset.view) queried to resolve the
-# target drug list (by cleaned_generic_name) for a given mechanism-of-action /
-# target filter — e.g. every GLP-1 drug — instead of relying on GCS folder
-# discovery or a manually-set DRUG_NAME.
-DRUG_LIST_VIEW = os.getenv("DRUG_LIST_VIEW", "cognito-prod-394707.cognito_prod_datamart.vw_drug_details_full")
 
 # ─────────────────────────────────────────────
 # Patent filter — quality gates (patent_filter.py)
@@ -277,23 +235,15 @@ FDA_API_APPROVAL_SEARCH_LIMIT = int(os.getenv("FDA_API_APPROVAL_SEARCH_LIMIT", "
 # (primary_market_entry_horizon/score_calculation/merge_forecasted_loe.py, scoring.py; bq_utils.py)
 # ─────────────────────────────────────────────
 
-# Source: fully-qualified BQ table containing forecasted patent LOE data.
-FORECASTED_LOE_TABLE = os.getenv(
-    "FORECASTED_LOE_TABLE",
-    "cognito-prod-394707.cognito_prod_datamart.forecasted_loe",
-)
-
-# Output BQ tables (fully-qualified) written by primary_market_entry_horizon() at the end of each drug run.
-# glp_patent_loe  — blocking-analysis results only (Type="Existing") + scores.
-# glp_master_loe  — patents merged with forecasted_loe (Type="Forecasted") + final scores.
-# Each run replaces only that drug's rows, so re-runs and parallel Cloud Run
-# tasks (one drug each) never duplicate or clobber other drugs' rows.
-BQ_PATENT_LOE_TABLE = os.getenv("BQ_PATENT_LOE_TABLE", "cognito-prod-394707.cognito_prod_datamart.glp_patent_loe")
-BQ_MASTER_LOE_TABLE = os.getenv("BQ_MASTER_LOE_TABLE", "cognito-prod-394707.cognito_prod_datamart.glp_master_loe")
-
 # JSON snapshot of each output table:
 #   gs://{GCS_BUCKET}/{GCS_CACHE_PREFIX}/{GCS_JSON_EXPORT}/{table name}/{drug}_{YYYYMMDD_HHMMSS}.json
 GCS_JSON_EXPORT = os.getenv("GCS_JSON_EXPORT", "loe_json_exports")
+
+# Which IP dimension(s) run_ip_dimension runs:
+#   all (default)                — primary_market_entry_horizon, then patent_strength
+#   primary_market_entry_horizon — only that dimension
+#   patent_strength              — only that dimension (needs the drug's glp_master_loe rows)
+IP_DIMENSION = os.getenv("IP_DIMENSION", "all").strip().lower()
 
 # When True, forecasted_loe rows for Marketed/Pre-registration drugs are kept
 # (real LOE data does NOT supersede the forecast).
@@ -367,3 +317,59 @@ BQ_COLUMN_TYPES: dict = {
     "Avg Years to Entry":             "FLOAT64",
     "Score":                          "FLOAT64",
 }
+
+# ─────────────────────────────────────────────
+# BigQuery tables
+# ─────────────────────────────────────────────
+# Every table / view the pipeline reads or writes. Each is ONE fully-qualified
+# ID (project.dataset.table) except DIM_SCORES_TABLE, a bare table name that
+# gcp_utils combines with PROJECT_ID / BQ_DATASET_ID.
+
+# ── Reads ────────────────────────────────────
+
+# Patent-master: every patent known for each molecule, with its download/review
+# status and a confidence score. patent_filter() only returns GCS PDFs whose
+# patent number has a row here with patent_status = 'PDF Downloaded' and
+# confidence > 0.3 — so indexing, analysis and the output tables are all
+# restricted to this approved set.
+PATENT_MASTER_TABLE = os.getenv("PATENT_MASTER_TABLE", "cognito-dev-380506.stage.patent_master")
+
+# View queried to resolve the target drug list (by cleaned_generic_name) for a
+# mechanism-of-action / target filter, e.g. every GLP-1 drug (drug_list.py).
+DRUG_LIST_VIEW = os.getenv("DRUG_LIST_VIEW", "cognito-prod-394707.cognito_prod_datamart.vw_drug_details_full")
+
+# Clinical-trial phase data (lives in a separate GCP project from everything else).
+CLINICAL_EFFICACY_TABLE = os.getenv("CLINICAL_EFFICACY_TABLE", "cognito-dev-380506.data_mart.clinical_efficacy_glp1")
+
+# Secondary phase source ("the drug list table"): per-drug details (phase, LOE date, geography).
+DRUG_DETAILS_TABLE = os.getenv("DRUG_DETAILS_TABLE", "cognito-dev-380506.data_mart.vw_drug_details_full")
+
+# Brands table; empty = brand lookup disabled.
+BQ_BRANDS_TABLE = os.getenv("BQ_BRANDS_TABLE", "")
+
+# Forecasted patent LOE data merged into glp_master_loe.
+FORECASTED_LOE_TABLE = os.getenv(
+    "FORECASTED_LOE_TABLE",
+    "cognito-prod-394707.cognito_prod_datamart.forecasted_loe",
+)
+
+# ── Writes ───────────────────────────────────
+# Each run replaces only that drug's rows, so re-runs and parallel Cloud Run
+# tasks (one drug each) never duplicate or clobber other drugs' rows.
+
+# primary_market_entry_horizon():
+#   glp_patent_loe — blocking-analysis results only (Type="Existing") + scores.
+#   glp_master_loe — patents merged with forecasted_loe (Type="Forecasted") + final scores;
+#                    also the input of patent_strength().
+BQ_PATENT_LOE_TABLE = os.getenv("BQ_PATENT_LOE_TABLE", "cognito-prod-394707.cognito_prod_datamart.glp_patent_loe")
+BQ_MASTER_LOE_TABLE = os.getenv("BQ_MASTER_LOE_TABLE", "cognito-prod-394707.cognito_prod_datamart.glp_master_loe")
+
+# patent_strength():
+BQ_PATENT_STRENGTH_TABLE = os.getenv("BQ_PATENT_STRENGTH_TABLE", "cognito-prod-394707.cognito_prod_datamart.patent_strength_analysis_table")
+BQ_COUNTRY_SCORE_TABLE   = os.getenv("BQ_COUNTRY_SCORE_TABLE", "cognito-prod-394707.cognito_prod_datamart.patent_strength_country_score_table")
+
+# Per-run Gemini usage (one row per model per drug).
+GEMINI_STATS_TABLE = os.getenv("GEMINI_STATS_TABLE", f"{PROJECT_ID}.{BQ_DATASET_ID}.gemini_stats")
+
+# Dimension scores (bare table name).
+DIM_SCORES_TABLE = os.getenv("DIM_SCORES_TABLE", "dimension_scores")

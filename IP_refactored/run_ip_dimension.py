@@ -26,6 +26,7 @@ from typing import List
 
 from . import config
 from .drug_list import list_glp1_patent_files
+from .patent_strength import patent_strength
 from .primary_market_entry_horizon import primary_market_entry_horizon
 from .utils import setup_logging
 
@@ -75,8 +76,44 @@ def get_target_drugs() -> List[str]:
 # Shard runner (Cloud Run Jobs / multi-drug)
 # ─────────────────────────────────────────────
 
+DIMENSIONS = ("all", "primary_market_entry_horizon", "patent_strength")
+
+
+def get_dimension() -> str:
+    """The dimension(s) to run, from config.IP_DIMENSION (default "all" = both)."""
+    dimension = config.IP_DIMENSION
+    if dimension not in DIMENSIONS:
+        raise ValueError(f"IP_DIMENSION must be one of {', '.join(DIMENSIONS)}; got {dimension!r}")
+    return dimension
+
+
+async def run_drug(drug_name: str, reindex: bool = False) -> dict:
+    """Run the dimension(s) selected by config.IP_DIMENSION for one drug.
+    patent_strength reads the glp_master_loe rows primary_market_entry_horizon
+    writes, so with "all" it runs second and is skipped when the horizon run fails."""
+    dimension = get_dimension()
+    result: dict = {"drug_name": drug_name}
+    if dimension in ("all", "primary_market_entry_horizon"):
+        result = await primary_market_entry_horizon(drug_name, reindex=reindex)
+        if result.get("error"):
+            return result
+
+    if dimension in ("all", "patent_strength"):
+        try:
+            strength = await patent_strength(drug_name, reset=reindex)
+        except Exception as e:
+            logger.exception("[ERROR] patent_strength failed for %s", drug_name)
+            strength = {"drug_name": drug_name, "error": str(e)}
+        if dimension == "patent_strength":
+            return strength
+        result["patent_strength"] = strength
+        if strength.get("error"):
+            result["error"] = f"patent_strength: {strength['error']}"
+    return result
+
+
 async def run_shard(reindex: bool = False) -> dict:
-    """Run primary_market_entry_horizon() for every drug in this task's shard of the target list."""
+    """Run the IP dimension(s) for every drug in this task's shard of the target list."""
     drugs = get_target_drugs()
     if not drugs:
         return {"status": "error", "message": "No drugs to process — DRUG_NAME is unset and none were discovered.",
@@ -87,7 +124,7 @@ async def run_shard(reindex: bool = False) -> dict:
     for i, drug_name in enumerate(shard, 1):
         logger.info("[PROGRESS] %d/%d: %s", i, len(shard), drug_name)
         try:
-            results.append(await primary_market_entry_horizon(drug_name, reindex=reindex))
+            results.append(await run_drug(drug_name, reindex=reindex))
         except Exception as e:
             logger.exception("[ERROR] %s failed", drug_name)
             results.append({"drug_name": drug_name, "error": str(e), "patents": []})
@@ -108,13 +145,14 @@ def main() -> None:
                         help="Run one drug, overriding DRUG_NAME and discovery. On Cloud Run, set DRUG_NAME instead.")
     parser.add_argument("--reindex", action="store_true", help="Force re-indexing and re-analysis, ignoring caches.")
     args = parser.parse_args()
+    get_dimension()  # fail fast on an invalid config.IP_DIMENSION
 
     setup_logging()
     t0 = time.time()
     logger.info("IP DIMENSION PIPELINE — task %d/%d", config.CLOUD_RUN_TASK_INDEX + 1, config.CLOUD_RUN_TASK_COUNT)
 
     if args.drug:
-        result = asyncio.run(primary_market_entry_horizon(args.drug, reindex=args.reindex))
+        result = asyncio.run(run_drug(args.drug, reindex=args.reindex))
         failed = bool(result.get("error"))
         if failed:
             logger.error("[IP DIMENSION] %s", result["error"])
