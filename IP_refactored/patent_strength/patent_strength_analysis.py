@@ -13,7 +13,9 @@ Orchestrates the IP "Patent Strength" dimension for one drug:
          SF3 (20%) Prosecution History Vulnerability   SF4 (10%) Secondary Considerations
        using chunks retrieved once per patent from AlloyDB     (chunks, scoring)
     5. Country-weighted score and final patent score per drug (scoring.compute_country_wise_scores)
-    6. patent_strength_table + patent_strength_country_score_table -> BigQuery   (bq_utils)
+    6. Rationale: a short summary of the drug (<= 200 words)  (generate_report_and_rationale.generate_rationale)
+    7. patent_strength_table + patent_strength_country_score_table (with the rationale) -> BigQuery   (bq_utils)
+    8. PDF report built from those tables, uploaded to GCS     (generate_report_and_rationale.generate_report)
 
 Input is glp_master_loe, so run primary_market_entry_horizon for the drug first.
 
@@ -36,6 +38,7 @@ from .storage.bq_utils import build_output_bigquery, load_master_loe
 from .scoring.constants import ACTIVE_SFS, SF_DISPLAY_NAMES, SF_SCORE_LABELS
 from .scoring.pipeline import load_score_cache, score_all_patents
 from .scoring.scoring import compute_country_wise_scores
+from .generate_report_and_rationale.generate_rationale import rationale_for_drug
 from .retrieval.shortlist import build_shortlist
 
 logger = logging.getLogger(__name__)
@@ -115,6 +118,21 @@ def log_output_tables() -> None:
 # ─────────────────────────────────────────────
 
 
+def _generate_report(drug_name: str) -> dict:
+    """Build and upload the dimension's report; {"error": ...} if it fails."""
+    # Imported here so reportlab is only needed when a report is built.
+    from .generate_report_and_rationale.generate_report import report_for_drug
+
+    logger.info("[STRENGTH] Generating the %s report ...", config.DIMENSION_PATENT_STRENGTH)
+    try:
+        report = report_for_drug(drug_name)
+    except Exception as e:
+        logger.exception("[STRENGTH] Report failed for %r", drug_name)
+        return {"error": str(e), "gcs_uri": None, "archive_uri": None}
+    logger.info("[STRENGTH] Report -> %s", report["gcs_uri"])
+    return report
+
+
 async def patent_strength(drug_name: str, reset: bool = False) -> dict:
     """
     Patent-strength pipeline for ONE drug, plus a Gemini usage row per model in
@@ -126,7 +144,7 @@ async def patent_strength(drug_name: str, reset: bool = False) -> dict:
 
     Returns:
         {"drug_name", "patents_scored", "final_patent_score", "processing_time_seconds",
-         "output_tables": [...]}
+         "output_tables": [...], "rationale", "report": {"gcs_uri", "archive_uri"} or {"error"}}
         or {"drug_name", "error", ...} if the drug has nothing to score.
     """
     reset_gemini_call_stats()
@@ -172,12 +190,19 @@ async def _run_patent_strength(drug_name: str, reset: bool) -> dict:
     country_scores = compute_country_wise_scores(shortlist, results)
     log_country_scores(country_scores)
 
-    # Step 6: BigQuery
-    await asyncio.to_thread(build_output_bigquery, shortlist, results, country_scores, drug_name)
+    # Step 6: rationale — the drug's short summary (<= 200 words), stored on every country row
+    rationale = await asyncio.to_thread(rationale_for_drug, drug_name, shortlist, results, country_scores)
+
+    # Step 7: BigQuery
+    await asyncio.to_thread(build_output_bigquery, shortlist, results, country_scores, drug_name, rationale)
 
     log_sub_factor_summary(results, total=len(shortlist))
     log_final_scores(country_scores)
     log_output_tables()
+
+    # Step 8: the dimension's PDF report (built from the rows just written).
+    # A failed report is recorded in the result but does not fail the run.
+    report = await asyncio.to_thread(_generate_report, drug_name)
 
     final_score: Optional[float] = next(iter(country_scores["drug_details"].values()))["final_patent_score"]
     elapsed = time.time() - t0
@@ -188,4 +213,6 @@ async def _run_patent_strength(drug_name: str, reset: bool) -> dict:
         "final_patent_score":      final_score,
         "processing_time_seconds": round(elapsed, 1),
         "output_tables":           [config.BQ_PATENT_STRENGTH_TABLE, config.BQ_COUNTRY_SCORE_TABLE],
+        "rationale":               rationale,
+        "report":                  report,
     }

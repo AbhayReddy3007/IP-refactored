@@ -7,6 +7,8 @@ patent_strength_table + patent_strength_country_score_table.
 
     patent_strength_analysis.py   patent_strength(drug) — the whole pipeline for one drug, plus its run summaries
 
+    generate_report_and_rationale/   the drug's short rationale (stored in the country table) and its PDF report
+
     retrieval/   what goes in
         shortlist.py   which glp_master_loe patents get scored
         chunks.py      AlloyDB chunk retrieval + per-sub-factor re-ranking

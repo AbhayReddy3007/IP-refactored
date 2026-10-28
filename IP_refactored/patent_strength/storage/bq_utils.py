@@ -66,6 +66,7 @@ COUNTRY_SCORE_SCHEMA = [
     bigquery.SchemaField("avg_weighted_score", "FLOAT64"),
     bigquery.SchemaField("country_weighted_score", "FLOAT64"),
     bigquery.SchemaField("final_patent_score", "FLOAT64"),
+    bigquery.SchemaField("rationale", "STRING"),
     bigquery.SchemaField("updated_at", "STRING"),
 ]
 
@@ -133,7 +134,7 @@ def _build_strength_rows(df_shortlist: pd.DataFrame, results: list[dict], drug: 
     return rows
 
 
-def _build_country_rows(country_scores: dict, drug: str, updated_at: str) -> list[dict]:
+def _build_country_rows(country_scores: dict, drug: str, updated_at: str, rationale: str) -> list[dict]:
     rows = []
     for _, drug_entry in country_scores["drug_details"].items():
         final_score = drug_entry["final_patent_score"]
@@ -150,12 +151,14 @@ def _build_country_rows(country_scores: dict, drug: str, updated_at: str) -> lis
                 "avg_weighted_score": jdata["avg_weighted_score"],
                 "country_weighted_score": round(jdata["country_weighted_score"], 4),
                 "final_patent_score": round(final_score, 4),
+                "rationale": rationale,  # the drug's summary, repeated on each of its rows
                 "updated_at": updated_at,
             })
     return rows
 
 
-def build_output_bigquery(df_shortlist: pd.DataFrame, results: list[dict], country_scores: dict, drug: str) -> None:
+def build_output_bigquery(df_shortlist: pd.DataFrame, results: list[dict], country_scores: dict, drug: str,
+                          rationale: str = "") -> None:
     """Write patent_strength_table and patent_strength_country_score_table for *drug*.
     ``updated_at`` is when the scores were calculated: ISO 8601, microseconds, UTC."""
     updated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -167,7 +170,7 @@ def build_output_bigquery(df_shortlist: pd.DataFrame, results: list[dict], count
     )
     logger.info("Writing %s ...", config.BQ_COUNTRY_SCORE_TABLE)
     _replace_drug_rows(
-        _build_country_rows(country_scores, drug, updated_at),
+        _build_country_rows(country_scores, drug, updated_at, rationale),
         config.BQ_COUNTRY_SCORE_TABLE, COUNTRY_SCORE_SCHEMA, drug,
     )
 
