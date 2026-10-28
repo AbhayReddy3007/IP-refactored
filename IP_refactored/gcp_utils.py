@@ -1,12 +1,11 @@
 """
 gcp_utils.py
 ────────────
-Shared Google Cloud helpers for BigQuery, GCS, and Gemini (genai) operations.
+Shared Google Cloud helpers for BigQuery and GCS operations.
 
-This is the ONLY module in the package that should talk to Google Cloud /
-Google AI directly. Every other module (including everything under
-chunking/) should call into the functions here instead of instantiating
-its own bigquery.Client / storage.Client / genai.Client.
+Every module (including everything under chunking/) should call into the
+functions here instead of instantiating its own bigquery.Client /
+storage.Client. Gemini calls go through gemini_utils, never a client of their own.
 """
 
 from __future__ import annotations
@@ -29,7 +28,6 @@ from .config import (
     GCS_IP_SUBFOLDER,
     GCS_PIPELINE_CACHE_BASE_PATH,
     GCS_REPORT_BASE_PATH,
-    GOOGLE_API_KEY,
     GOOGLE_APPLICATION_CREDENTIALS,
     PROJECT_ID,
 )
@@ -65,39 +63,6 @@ def get_gcs_client() -> storage.Client:
     if credentials_path and Path(credentials_path).exists():
         return storage.Client.from_service_account_json(credentials_path)
     return storage.Client(project=PROJECT_ID)
-
-
-class _LazyGenaiClient:
-    """Lazily instantiate the real genai.Client on first attribute access.
-
-    Importing this module (or anything that imports it) no longer requires
-    GOOGLE_API_KEY / GEMINI_API_KEY to be present — the key is only required
-    the first time the client is actually used.
-    """
-
-    _client = None
-
-    def _resolve(self):
-        if _LazyGenaiClient._client is None:
-            if not GOOGLE_API_KEY:
-                raise RuntimeError(
-                    "GOOGLE_API_KEY or GEMINI_API_KEY must be set (see config.py) "
-                    "to use the Gemini client."
-                )
-            from google import genai
-            _LazyGenaiClient._client = genai.Client(api_key=GOOGLE_API_KEY)
-        return _LazyGenaiClient._client
-
-    def __getattr__(self, name):
-        return getattr(self._resolve(), name)
-
-
-_gemini_client_singleton = _LazyGenaiClient()
-
-
-def get_gemini_client():
-    """Return the shared (lazily-instantiated) Gemini genai client."""
-    return _gemini_client_singleton
 
 
 # ─────────────────────────────────────────────

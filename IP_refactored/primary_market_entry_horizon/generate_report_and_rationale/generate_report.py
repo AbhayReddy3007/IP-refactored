@@ -21,14 +21,12 @@ Usage:
 import argparse
 import logging
 import re
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 from xml.sax.saxutils import escape
 
 import pandas as pd
-from google.genai import types
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
 from reportlab.lib.pagesizes import A4
@@ -39,7 +37,8 @@ from reportlab.platypus import (
 )
 
 from ... import config
-from ... import gcp_utils, gcp_helpers
+from ... import gcp_helpers
+from ...gemini_utils import gemini_api_call
 from ...utils import is_blank, normalize_drug_str, safe_name, setup_logging
 from ..bq_utils import load_master_table
 from .generate_rationale import (
@@ -50,7 +49,6 @@ from .generate_rationale import (
 logger = logging.getLogger(__name__)
 
 RATIONALE_COL = "Rationale"
-GEMINI_RETRIES = 5
 
 # ─────────────────────────────────────────────
 # PDF styles
@@ -165,24 +163,14 @@ def _build_data_block(d: Dict) -> str:
 
 
 def _gemini_call(prompt: str) -> str:
-    """One Gemini call, retried with back-off on rate limits."""
-    client = gcp_utils.get_gemini_client()
-    for attempt in range(GEMINI_RETRIES):
-        try:
-            resp = client.models.generate_content(
-                model=config.GEMINI_TEXT_MODEL, contents=prompt,
-                config=types.GenerateContentConfig(temperature=0.2, max_output_tokens=8192),
-            )
-            return (resp.text or "").strip()
-        except Exception as e:
-            if "429" in str(e) and attempt < GEMINI_RETRIES - 1:
-                wait = 15 * (attempt + 1)
-                logger.warning("[REPORT] Rate limited — waiting %ds before retry", wait)
-                time.sleep(wait)
-            else:
-                logger.error("[REPORT] Gemini generation failed: %s", e)
-                return f"[Generation failed: {e}]"
-    return "[Generation failed after retries]"
+    """One Gemini call (gemini_utils retries with back-off)."""
+    try:
+        return gemini_api_call(
+            prompt, config.GEMINI_TEXT_MODEL, temperature=0.2, max_output_tokens=8192,
+        ).strip()
+    except Exception as e:
+        logger.error("[REPORT] Gemini generation failed: %s", e)
+        return f"[Generation failed: {e}]"
 
 
 def generate_page1_text(d: Dict) -> str:

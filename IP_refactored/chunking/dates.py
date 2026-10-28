@@ -35,12 +35,11 @@ from google.genai import types
 
 from .. import config
 from .. import gcp_utils
+from ..gemini_utils import gemini_generate_async
 from ..utils import normalize_patent_number
 from .utils import clean_date, fmt_elapsed
 
 logger = logging.getLogger(__name__)
-
-gemini_client = gcp_utils.get_gemini_client()
 
 # normalised patent number -> filing_date (YYYY-MM-DD) or None when patent_master has none.
 # Only successful lookups are cached, so a failed query is retried next time.
@@ -132,10 +131,9 @@ def _parse_gemini_date_response(raw: str) -> Dict:
 
 async def _call_gemini_for_dates(contents: list, filename: str) -> Dict:
     try:
-        response = await gemini_client.aio.models.generate_content(
-            model=config.GEMINI_TEXT_MODEL,
-            contents=contents,
-            config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0, max_output_tokens=256),
+        response = await gemini_generate_async(
+            contents, config.GEMINI_TEXT_MODEL,
+            response_mime_type="application/json", temperature=0, max_output_tokens=256,
         )
         raw = (response.text or "").strip()
         if raw:
@@ -146,10 +144,8 @@ async def _call_gemini_for_dates(contents: list, filename: str) -> Dict:
         logger.warning("[DATES] Structured call failed for %s: %s", filename, e)
 
     try:
-        response = await gemini_client.aio.models.generate_content(
-            model=config.GEMINI_TEXT_MODEL,
-            contents=contents,
-            config=types.GenerateContentConfig(temperature=0, max_output_tokens=256),
+        response = await gemini_generate_async(
+            contents, config.GEMINI_TEXT_MODEL, temperature=0, max_output_tokens=256,
         )
         raw = (response.text or "").strip()
         if raw:

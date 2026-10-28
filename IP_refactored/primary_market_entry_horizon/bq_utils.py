@@ -17,12 +17,17 @@ Writes (the LOE output tables glp_patent_loe / glp_master_loe):
         export_table_json()    gs://{GCS_BUCKET}/{GCS_CACHE_PREFIX}/{GCS_JSON_EXPORT}/{table name}/{drug}_{run_ts}.json
         write_table_to_bq()    delete the drug's previous rows (IP_refactored/delete_rows.py), then append — re-runs replace, not duplicate
 
+Gemini usage (one row per model per drug run):
+    append_gemini_stats_to_bigquery(drug, dimension, stats_by_model, run_status, ...)   (config.GEMINI_STATS_TABLE)
+
 All BigQuery / GCS access goes through IP_refactored.gcp_utils; table IDs come from IP_refactored.config.
 """
 
 import logging
+import os
+from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 from google.cloud import bigquery
@@ -193,6 +198,64 @@ def write_table_to_bq(table: pd.DataFrame, target: str, drug_name: str) -> str:
     gcp_helpers.load_dataframe(table, target, bq_schema(table))
     logger.info("[EXPORT] %s: replaced %d old row(s) with %d row(s) for %r", target, deleted, len(table), drug_name)
     return target
+
+
+GEMINI_STATS_SCHEMA: List[bigquery.SchemaField] = [
+    bigquery.SchemaField("molecule_name", "STRING"),
+    bigquery.SchemaField("dimension", "STRING"),
+    bigquery.SchemaField("model_used", "STRING"),
+    bigquery.SchemaField("service_tier", "STRING"),
+    bigquery.SchemaField("execution_time_seconds", "FLOAT64"),
+    bigquery.SchemaField("input_token_count", "INT64"),
+    bigquery.SchemaField("output_token_count", "INT64"),
+    bigquery.SchemaField("thought_token_count", "INT64"),
+    bigquery.SchemaField("tool_token_count", "INT64"),
+    bigquery.SchemaField("total_token_count", "INT64"),
+    bigquery.SchemaField("total_num_of_calls", "INT64"),
+    bigquery.SchemaField("num_of_search_enabled_calls", "INT64"),
+    bigquery.SchemaField("num_of_search_queries", "INT64"),
+    bigquery.SchemaField("run_status", "STRING"),
+    bigquery.SchemaField("error_message", "STRING"),
+    bigquery.SchemaField("cloud_run_job", "STRING"),
+    bigquery.SchemaField("cloud_run_task_index", "INT64"),
+    bigquery.SchemaField("created_at", "TIMESTAMP"),
+]
+
+
+def append_gemini_stats_to_bigquery(
+    molecule_name: str,
+    dimension_name: str,
+    stats_by_model: List[Dict[str, Any]],
+    run_status: str,
+    error_message: Optional[str] = None,
+    execution_time_seconds: Optional[float] = None,
+) -> None:
+    """Append one row per model used by a dimension-molecule run."""
+    if not stats_by_model:
+        logger.info("No Gemini calls recorded for %s/%s; no stats row written", molecule_name, dimension_name)
+        return
+
+    common_fields = {
+        "molecule_name": molecule_name.strip(),
+        "dimension": dimension_name.strip(),
+        "execution_time_seconds": execution_time_seconds,
+        "run_status": run_status,
+        "error_message": error_message,
+        "cloud_run_job": os.getenv("CLOUD_RUN_EXECUTION", ""),
+        "cloud_run_task_index": config.CLOUD_RUN_TASK_INDEX,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    rows = [{**common_fields, **model_stats} for model_stats in stats_by_model]
+
+    job_config = bigquery.LoadJobConfig(
+        schema=GEMINI_STATS_SCHEMA,
+        write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+        create_disposition=bigquery.CreateDisposition.CREATE_IF_NEEDED,
+        schema_update_options=[bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION],
+    )
+    table_id = config.GEMINI_STATS_TABLE
+    gcp_utils.get_bq_client().load_table_from_json(rows, table_id, job_config=job_config).result()
+    logger.info("Appended %d Gemini stats row(s) for %s/%s to %s", len(rows), molecule_name, dimension_name, table_id)
 
 
 def publish_table(df: pd.DataFrame, table_id: str, drug_name: str, run_ts: str) -> Dict[str, Optional[str]]:

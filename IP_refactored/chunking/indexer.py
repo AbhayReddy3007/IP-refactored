@@ -8,7 +8,7 @@ Pipeline per patent:
     1. Skip if already indexed (sentinel exists in AlloyDB)
     2. Cross-collection dedup — copy from another drug's collection if found
     3. Download PDF from GCS
-    4. Upload to Gemini Files API, extract full text
+    4. Send the PDF to Gemini (inline), extract full text
        (fallback chain: Gemini → PyMuPDF text layer → Gemini Vision OCR)
     5. Extract filing/grant dates from the cover page
        (fallback chain: native PDF upload → rendered-page vision)
@@ -40,6 +40,7 @@ from google.genai import types
 
 from .. import config
 from .. import gcp_utils
+from ..gemini_utils import gemini_embed_async, gemini_generate_async
 from .alloydb_client import alloydb_client
 from ..patent_filter import patent_filter
 from ..utils import safe_name
@@ -47,8 +48,6 @@ from .dates import get_dates_from_alloydb, resolve_dates
 from .utils import chunk_text, clean_date, fmt_elapsed, safe_collection_name
 
 logger = logging.getLogger(__name__)
-
-gemini_client = gcp_utils.get_gemini_client()
 
 
 # ─────────────────────────────────────────────
@@ -142,70 +141,32 @@ def download_single_patent_pdf(blob_name: str, filename: str, drug_name: str) ->
 # Gemini file upload + text extraction
 # ─────────────────────────────────────────────
 
-async def upload_pdf_to_gemini(file_path: str) -> Optional[object]:
+async def load_pdf_for_gemini(file_path: str) -> Optional[types.Part]:
+    """Read the PDF into an inline Gemini part (Vertex AI has no Files API).
+    None if the file is larger than config.GEMINI_FILE_SIZE_LIMIT_MB or unreadable."""
     path = Path(file_path)
     file_size_mb = path.stat().st_size / (1024 * 1024)
     if file_size_mb > config.GEMINI_FILE_SIZE_LIMIT_MB:
         logger.error("[UPLOAD] %s is %.1f MB — exceeds %d MB limit.", path.name, file_size_mb, config.GEMINI_FILE_SIZE_LIMIT_MB)
         return None
-
-    loop = asyncio.get_running_loop()
-    overall_start = time.monotonic()
-
-    for attempt in range(1, config.MAX_UPLOAD_RETRIES + 1):
-        try:
-            logger.info("[UPLOAD] %s: uploading to Gemini Files API (%.1f MB, attempt %d/%d)...",
-                        path.name, file_size_mb, attempt, config.MAX_UPLOAD_RETRIES)
-            upload_start = time.monotonic()
-            uploaded_file = await loop.run_in_executor(
-                None,
-                lambda: gemini_client.files.upload(file=file_path, config=dict(mime_type="application/pdf")),
-            )
-            logger.info("[UPLOAD] %s: upload call returned in %s (state=%s) — waiting for Gemini to finish processing...",
-                        path.name, fmt_elapsed(upload_start), uploaded_file.state)
-
-            max_wait, wait_time = config.GEMINI_UPLOAD_MAX_WAIT_SECONDS, 0
-            while uploaded_file.state == "PROCESSING" and wait_time < max_wait:
-                await asyncio.sleep(2 + random.uniform(0, 0.5))
-                _file_name = uploaded_file.name
-                uploaded_file = await loop.run_in_executor(None, lambda n=_file_name: gemini_client.files.get(name=n))
-                wait_time += 2
-                logger.info("[UPLOAD] %s: still PROCESSING after %ds (polling every ~2s, timeout at %ds)...",
-                            path.name, wait_time, max_wait)
-
-            if uploaded_file.state == "FAILED":
-                logger.error("[UPLOAD] %s: Gemini reported FAILED after %s", path.name, fmt_elapsed(overall_start))
-                return None
-
-            if uploaded_file.state == "PROCESSING":
-                logger.warning("[UPLOAD] %s: still PROCESSING after %ds timeout — proceeding anyway (may fail downstream)",
-                                path.name, max_wait)
-
-            logger.info("[UPLOAD] %s: ready (state=%s) in %s total", path.name, uploaded_file.state, fmt_elapsed(overall_start))
-            return uploaded_file
-
-        except Exception as e:
-            if attempt == config.MAX_UPLOAD_RETRIES:
-                logger.error("[UPLOAD] %s: failed after %d attempt(s) / %s: %s",
-                              path.name, config.MAX_UPLOAD_RETRIES, fmt_elapsed(overall_start), e)
-                return None
-            backoff = (2 ** attempt) + random.uniform(0, 1)
-            logger.warning("[UPLOAD] %s: attempt %d failed: %s — retrying in %.1fs", path.name, attempt, e, backoff)
-            await asyncio.sleep(backoff)
-
-    return None
+    try:
+        data = await asyncio.get_running_loop().run_in_executor(None, path.read_bytes)
+    except Exception as e:
+        logger.error("[UPLOAD] %s: could not read PDF: %s", path.name, e)
+        return None
+    return types.Part.from_bytes(data=data, mime_type="application/pdf")
 
 
-async def extract_text_via_gemini(uploaded_file: object, filename: str) -> Optional[str]:
-    """Extract full plain text from an uploaded PDF via Gemini."""
+async def extract_text_via_gemini(pdf_part: types.Part, filename: str) -> Optional[str]:
+    """Extract full plain text from a PDF part via Gemini."""
     start = time.monotonic()
     logger.info("[TEXT EXTRACTION] %s: requesting full-text extraction from Gemini (model=%s)...",
                 filename, config.GEMINI_TEXT_MODEL)
     try:
-        response = await gemini_client.aio.models.generate_content(
-            model=config.GEMINI_TEXT_MODEL,
-            contents=[uploaded_file, _TEXT_EXTRACTION_PROMPT],
-            config=types.GenerateContentConfig(temperature=0, max_output_tokens=65536),
+        response = await gemini_generate_async(
+            [pdf_part, _TEXT_EXTRACTION_PROMPT],
+            config.GEMINI_TEXT_MODEL,
+            temperature=0, max_output_tokens=65536,
         )
         try:
             finish_reason = response.candidates[0].finish_reason
@@ -220,15 +181,6 @@ async def extract_text_via_gemini(uploaded_file: object, filename: str) -> Optio
     except Exception as e:
         logger.error("[TEXT EXTRACTION] %s: failed after %s: %s", filename, fmt_elapsed(start), e)
         return None
-
-
-async def cleanup_uploaded_file(uploaded_file: object):
-    loop = asyncio.get_running_loop()
-    _file_name = uploaded_file.name
-    try:
-        await loop.run_in_executor(None, lambda: gemini_client.files.delete(name=_file_name))
-    except Exception as e:
-        logger.warning("[UPLOAD] Could not clean up %s: %s", _file_name, e)
 
 
 # ─────────────────────────────────────────────
@@ -301,10 +253,8 @@ async def extract_text_via_ocr(file_path: str, filename: str) -> Optional[str]:
         logger.info("[OCR] %s: batch %d/%d (pages %d-%d) — requesting OCR from Gemini...",
                     filename, batch_num, n_batches, batch_start, batch_start + len(batch) - 1)
         try:
-            response = await gemini_client.aio.models.generate_content(
-                model=config.GEMINI_TEXT_MODEL,
-                contents=contents,
-                config=types.GenerateContentConfig(temperature=0, max_output_tokens=65536),
+            response = await gemini_generate_async(
+                contents, config.GEMINI_TEXT_MODEL, temperature=0, max_output_tokens=65536,
             )
             batch_text = (response.text or "").strip()
             if batch_text:
@@ -344,16 +294,9 @@ async def generate_embeddings(texts: List[str], filename: str = "") -> List[List
                 try:
                     logger.info("[EMBEDDINGS] %s: batch %d/%d (%d chunk(s), attempt %d/%d)...",
                                 filename or "?", batch_num, n_batches, len(batch), attempt, config.MAX_EMBED_RETRIES)
-                    result = await loop.run_in_executor(
-                        None,
-                        lambda b=batch: gemini_client.models.embed_content(
-                            model=config.GEMINI_EMBEDDING_MODEL,
-                            contents=b,
-                            config=types.EmbedContentConfig(task_type="SEMANTIC_SIMILARITY"),
-                        ),
-                    )
-                    for emb in result.embeddings:
-                        embeddings.append(emb.values)
+                    embeddings.extend(await gemini_embed_async(
+                        batch, config.GEMINI_EMBEDDING_MODEL, task_type="SEMANTIC_SIMILARITY",
+                    ))
                     logger.info("[EMBEDDINGS] %s: batch %d/%d done in %s",
                                 filename or "?", batch_num, n_batches, fmt_elapsed(batch_start))
                     break
@@ -598,16 +541,16 @@ async def _process_single_patent(
             return {"filename": filename, "path": None, "tmp_dir": None}
 
         try:
-            _mark_step("uploading to Gemini Files API")
-            uploaded_file = await upload_pdf_to_gemini(pf["path"])
-            if not uploaded_file:
-                _finish(f"Gemini upload failed after {fmt_elapsed(step_start)}")
+            _mark_step("loading PDF for Gemini")
+            pdf_part = await load_pdf_for_gemini(pf["path"])
+            if not pdf_part:
+                _finish(f"could not load PDF for Gemini after {fmt_elapsed(step_start)}")
                 return pf
 
             _mark_step("extracting text + filing/grant dates (parallel)")
             logger.info("[PATENT] %s %s: extracting text and dates in parallel...", position, filename)
             text, dates = await asyncio.gather(
-                extract_text_via_gemini(uploaded_file, filename),
+                extract_text_via_gemini(pdf_part, filename),
                 resolve_dates(pf["path"], filename),
             )
 
@@ -628,11 +571,6 @@ async def _process_single_patent(
                 logger.warning("[WARNING] No text extracted from %s — all methods failed", filename)
                 outcome = f"no text extracted (all methods failed) after {fmt_elapsed(step_start)}"
 
-            # Cleanup happens BEFORE _finish() so the heartbeat doesn't show
-            # this patent as both "done" and still "in flight" for the
-            # cleanup step.
-            _mark_step("cleaning up Gemini upload")
-            await cleanup_uploaded_file(uploaded_file)
             await asyncio.sleep(0.5 + random.uniform(0, 0.5))
             _finish(outcome)
 

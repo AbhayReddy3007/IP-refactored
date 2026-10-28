@@ -46,8 +46,6 @@ try:
     from dotenv import load_dotenv
 except ImportError:
     load_dotenv = lambda **kw: None  # Not needed on Cloud Run
-from google import genai
-from google.genai import types
 from google.cloud import bigquery
 
 load_dotenv(override=True)
@@ -56,9 +54,12 @@ load_dotenv(override=True)
 _here   = Path(__file__).resolve().parent
 _parent = _here.parent
 
-for _p in [str(_here), str(_parent)]:
+# _parent.parent holds the IP_refactored package (for the shared gemini_utils).
+for _p in [str(_here), str(_parent), str(_parent.parent)]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+from IP_refactored.gemini_utils import gemini_generate_async
 
 # Note: `forecast-main` cannot be a Python package (hyphen in the directory
 # name makes it unimportable), so all helpers we need live in the sibling
@@ -88,8 +89,6 @@ except Exception as _e:
 # Gemini client
 # ─────────────────────────────────────────────
 
-_api_key      = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-_gemini       = genai.Client(api_key=_api_key)
 _GEMINI_MODEL = "gemini-2.0-flash"
 
 
@@ -398,13 +397,8 @@ Examples of expected output: "2016-12-05", "2021-09-15", "None"
 Return ONLY the date string, nothing else.
 """
     try:
-        response = await _gemini.aio.models.generate_content(
-            model    = _GEMINI_MODEL,
-            contents = prompt,
-            config   = types.GenerateContentConfig(
-                tools       = [types.Tool(google_search=types.GoogleSearch())],
-                temperature = 0.1,
-            ),
+        response = await gemini_generate_async(
+            prompt, _GEMINI_MODEL, google_search=True, temperature=0.1,
         )
         raw = (response.text or "").strip().strip(".")
         if raw.lower() in ("none", "n/a", "unknown", ""):
@@ -933,15 +927,10 @@ Search the web and return ONLY the company name. No explanation, no extra text. 
 Examples: "Novo Nordisk", "Eli Lilly", "AstraZeneca"
 """
     try:
-        response = await _gemini.aio.models.generate_content(
-            model    = _GEMINI_MODEL,
-            contents = prompt,
-            config   = types.GenerateContentConfig(
-                tools       = [types.Tool(google_search=types.GoogleSearch())],
-                temperature = 0.1,
-            ),
+        response = await gemini_generate_async(
+            prompt, _GEMINI_MODEL, google_search=True, temperature=0.1,
         )
-        name = (response.text or "").strip().strip(".")
+        name =(response.text or "").strip().strip(".")
         print(f"[STEP 1] Innovator for '{drug_name}': {name}")
         return name or "Unknown"
     except Exception as e:
@@ -1125,10 +1114,7 @@ Respond ONLY with valid JSON, no markdown:
 """
 
     try:
-        response = await _gemini.aio.models.generate_content(
-            model    = _GEMINI_MODEL,
-            contents = prompt,
-        )
+        response = await gemini_generate_async(prompt, _GEMINI_MODEL)
         raw = response.text.strip()
         if raw.startswith("```"):
             raw = raw.split("```")[1]
@@ -1136,7 +1122,7 @@ Respond ONLY with valid JSON, no markdown:
                 raw = raw[4:]
         raw = raw.strip()
         parsed = json.loads(raw)
-        layer        = int(parsed.get("layer", 99))
+        layer       = int(parsed.get("layer", 99))
         description  = str(parsed.get("description", "—")).strip().strip(".")
         parent       = str(parsed.get("parent_patent", "None")).strip()
         layer_reason = str(parsed.get("layer_reason", "—")).strip()
@@ -1568,10 +1554,7 @@ Respond ONLY with valid JSON, no markdown:
 """
         try:
             print(f"[STEP 3] Asking LLM for filing patterns...")
-            response = await _gemini.aio.models.generate_content(
-                model    = _GEMINI_MODEL,
-                contents = prompt,
-            )
+            response = await gemini_generate_async(prompt, _GEMINI_MODEL)
             raw = response.text.strip()
             if raw.startswith("```"):
                 raw = raw.split("```")[1]
@@ -1646,10 +1629,7 @@ Write 5-8 concise bullet points. Be specific — reference actual patent numbers
 Respond with plain text bullet points only, no headers, no markdown.
 """
     try:
-        response = await _gemini.aio.models.generate_content(
-            model    = _GEMINI_MODEL,
-            contents = prompt,
-        )
+        response = await gemini_generate_async(prompt, _GEMINI_MODEL)
         return response.text.strip()
     except Exception as e:
         print(f"[STEP 2] Insights LLM failed for {drug_name}: {e}")
@@ -1902,10 +1882,7 @@ Write section 8 as multiple detailed paragraphs, one per sub-section (8a through
 
     try:
         print(f"[STEP 2] Generating innovator insights for {innovator} ({', '.join(drug_names)})...")
-        response = await _gemini.aio.models.generate_content(
-            model    = _GEMINI_MODEL,
-            contents = prompt,
-        )
+        response = await gemini_generate_async(prompt, _GEMINI_MODEL)
         raw = response.text.strip()
 
         rows = [{"Section": "Innovator", "Content": innovator}]

@@ -24,18 +24,13 @@ from urllib.parse import quote_plus
 
 import requests
 from bs4 import BeautifulSoup
-from google.genai import types
 
 from ... import config
-from ... import gcp_utils
+from ...gemini_utils import gemini_generate
 from ...utils import format_date_dmy
 from ..bq_utils import fetch_brands_df
 
 logger = logging.getLogger(__name__)
-
-# Shared, lazily-instantiated Gemini client (see gcp_utils.get_gemini_client) —
-# no module-local _LazyGenaiClient duplication.
-gemini_client = gcp_utils.get_gemini_client()
 
 _HTTP_HEADERS = {"User-Agent": "Mozilla/5.0", "Accept-Language": "en-US,en;q=0.9"}
 
@@ -357,13 +352,7 @@ def _approval_step_b_gemini(
         f'"notes":"<one sentence confirming this is the ORIGINAL approval date>"}}'
     )
     try:
-        response = gemini_client.models.generate_content(
-            model    = config.GEMINI_TEXT_MODEL,
-            contents = prompt,
-            config   = types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-            ),
-        )
+        response = gemini_generate(prompt, config.GEMINI_TEXT_MODEL, google_search=True)
         raw   = response.text.strip()
         clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.MULTILINE).strip()
         p     = json.loads(clean)

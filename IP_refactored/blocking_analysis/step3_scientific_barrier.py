@@ -31,12 +31,11 @@ from bs4 import BeautifulSoup
 from google.genai import types
 
 from .. import config
-from .. import gcp_utils, gcp_helpers
+from .. import gcp_helpers
+from ..gemini_utils import gemini_generate_async
 from .step2_claim_elements import _format_rows_for_prompt
 
 logger = logging.getLogger(__name__)
-
-gemini_client = gcp_utils.get_gemini_client()
 
 
 # ── EMA EPAR helpers (inlined from ema_epar_extractor to avoid import conflicts) ──
@@ -468,13 +467,8 @@ async def _gather_gemini_evidence_angle(
     label = angle["label"]
 
     try:
-        response = await gemini_client.aio.models.generate_content(
-            model    = config.GEMINI_TEXT_MODEL,
-            contents = prompt,
-            config   = types.GenerateContentConfig(
-                tools       = [types.Tool(google_search=types.GoogleSearch())],
-                temperature = 0.1,
-            ),
+        response = await gemini_generate_async(
+            prompt, config.GEMINI_TEXT_MODEL, google_search=True, temperature=0.1,
         )
         text = (response.text or "").strip()
         if text:
@@ -597,16 +591,10 @@ async def _analyse_fda_review_pdf(pdf_url: str, doc_type: str, drug_name: str, c
     )
 
     try:
-        response = await gemini_client.aio.models.generate_content(
-            model    = config.GEMINI_TEXT_MODEL,
-            contents = [
-                types.Part.from_uri(file_uri=pdf_url, mime_type="application/pdf"),
-                prompt,
-            ],
-            config = types.GenerateContentConfig(
-                temperature       = 0.1,
-                max_output_tokens = 1024,
-            ),
+        response = await gemini_generate_async(
+            [types.Part.from_uri(file_uri=pdf_url, mime_type="application/pdf"), prompt],
+            config.GEMINI_TEXT_MODEL,
+            temperature=0.1, max_output_tokens=1024,
         )
         text = response.text or ""
         logger.info(f"[FDA REVIEW] Extracted {len(text)} chars from {doc_type}")
@@ -674,16 +662,10 @@ async def _analyse_ema_pdf(pdf_url: str, doc_type: str, drug_name: str, claim_re
         claim_reason = claim_reason,
     )
     try:
-        response = await gemini_client.aio.models.generate_content(
-            model    = config.GEMINI_TEXT_MODEL,
-            contents = [
-                types.Part.from_uri(file_uri=pdf_url, mime_type="application/pdf"),
-                prompt,
-            ],
-            config = types.GenerateContentConfig(
-                temperature       = 0.1,
-                max_output_tokens = 1024,
-            ),
+        response = await gemini_generate_async(
+            [types.Part.from_uri(file_uri=pdf_url, mime_type="application/pdf"), prompt],
+            config.GEMINI_TEXT_MODEL,
+            temperature=0.1, max_output_tokens=1024,
         )
         text = (response.text or "").strip()
         logger.info(f"[EMA EPAR] Extracted {len(text)} chars from {doc_type} for '{drug_name}'")

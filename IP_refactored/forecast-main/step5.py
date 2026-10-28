@@ -41,18 +41,20 @@ except ImportError:
     load_dotenv = lambda **kw: None  # Not needed on Cloud Run
 
 # ── Google Cloud ──────────────────────────────────────────────────────────────
-import vertexai
-from vertexai.preview.generative_models import GenerativeModel, Tool, grounding
 from google.cloud import bigquery
+from google.genai import types
 from google.oauth2 import service_account
 
 load_dotenv(override=True)
 
 # ── Drug universe filter (GLP-1 agonists only) ─────────────────────────────────
-_p = str(Path(__file__).resolve().parent.parent)
-if _p not in sys.path:
-    sys.path.insert(0, _p)
+# parent = the dir holding cog/; parent.parent = the dir holding the IP_refactored package.
+_parent = Path(__file__).resolve().parent.parent
+for _p in (str(_parent), str(_parent.parent)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 from cog import drug_filter
+from IP_refactored.gemini_utils import gemini_generate
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Config — edit these or set via environment variables
@@ -65,8 +67,7 @@ BQ_DATASET_ID    = os.getenv("BQ_DATASET_ID",        "cognito_prod_datamart")
 BQ_TABLE_ID      = os.getenv("BQ_TABLE_ID",          "company_analysis_table")
 CREDENTIALS_PATH = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 
-VERTEX_LOCATION  = os.getenv("VERTEX_LOCATION",      "us-central1")
-GEMINI_MODEL     = "gemini-2.5-flash-preview-05-20"
+GEMINI_MODEL    = "gemini-2.5-flash-preview-05-20"
 
 _HTTP_HEADERS = {
     "User-Agent": "PatentPipeline/1.0 (patent.analysis@example.com)",
@@ -90,22 +91,12 @@ def _build_credentials():
 
 _credentials = _build_credentials()
 
-# Vertex AI SDK init
-vertexai.init(
-    project     = PROJECT_ID,
-    location    = VERTEX_LOCATION,
-    credentials = _credentials,
-)
-
 # BigQuery client
 _bq_client = bigquery.Client(
     project     = BQ_PROJECT_ID,
     location    = BQ_LOCATION,
     credentials = _credentials,
 )
-
-# Gemini model (Vertex AI)
-_gemini = GenerativeModel(GEMINI_MODEL)
 
 print(f"[INIT] Gemini model : {GEMINI_MODEL}")
 print(f"[INIT] BQ target    : {BQ_PROJECT_ID}.{BQ_DATASET_ID}.{BQ_TABLE_ID}")
@@ -453,25 +444,20 @@ def _vertex_search(company: str, therapy_area: str) -> str:
         try:
             if engine_id:
                 # ── Private data store ─────────────────────────────────────
-                tool = Tool.from_retrieval(
-                    grounding.Retrieval(
-                        grounding.VertexAISearch(
-                            datastore=engine_id,
-                            project=PROJECT_ID,
-                            location="global",
-                        )
+                tool = types.Tool(
+                    retrieval=types.Retrieval(
+                        vertex_ai_search=types.VertexAISearch(datastore=engine_id)
                     )
                 )
             else:
                 # ── Google Search grounding (public web) ───────────────────
-                tool = Tool.from_google_search_retrieval(
-                    grounding.GoogleSearchRetrieval()
-                )
+                tool = types.Tool(google_search=types.GoogleSearch())
 
-            response = _gemini.generate_content(
+            response = gemini_generate(
                 f"Find and summarise the most relevant content about: {q}\n"
                 f"Focus on revenue figures, pipeline assets, strategy statements, "
                 f"and patent/IP information. Be specific with numbers and dates.",
+                GEMINI_MODEL,
                 tools=[tool],
             )
             text = response.text or ""
@@ -529,8 +515,7 @@ def _search_supplemental(company: str, therapy_area: str, drugs: List[str]) -> s
     )
 
     try:
-        tool     = Tool.from_google_search_retrieval(grounding.GoogleSearchRetrieval())
-        response = _gemini.generate_content(prompt, tools=[tool])
+        response = gemini_generate(prompt, GEMINI_MODEL, google_search=True)
         text     = (response.text or "").strip()
         print(f"[SEARCH] {len(text)} chars of supplemental intelligence")
         return f"SOURCE: Gemini web search (supplemental)\n\n{text}"
@@ -712,7 +697,7 @@ def _assess_patent_incentive(
 ) -> Dict:
     prompt = _build_assessment_prompt(company, therapy_area, drugs, combined)
     try:
-        resp   = _gemini.generate_content(prompt)
+        resp   = gemini_generate(prompt, GEMINI_MODEL)
         parsed = _parse_json_response(resp.text or "")
         if parsed:
             ratio = _na_ratio(parsed)
@@ -758,9 +743,8 @@ def _direct_gemini_report(company: str, therapy_area: str, drugs: List[str]) -> 
         f'"manufacturing_patents":""}},"overall_assessment":""}}'
     )
     try:
-        tool     = Tool.from_google_search_retrieval(grounding.GoogleSearchRetrieval())
-        response = _gemini.generate_content(prompt, tools=[tool])
-        parsed   = _parse_json_response(response.text or "")
+        response = gemini_generate(prompt, GEMINI_MODEL, google_search=True)
+        parsed   =_parse_json_response(response.text or "")
         if parsed:
             print("[STRATEGY] Direct Gemini report succeeded")
             return parsed

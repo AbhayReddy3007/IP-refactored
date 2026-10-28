@@ -38,8 +38,6 @@ try:
     from dotenv import load_dotenv
 except ImportError:
     load_dotenv = lambda **kw: None  # Not needed on Cloud Run
-from google import genai
-from google.genai import types
 
 load_dotenv(override=True)
 
@@ -48,17 +46,18 @@ _here   = Path(__file__).resolve().parent
 _parent = _here.parent
 _pkg    = _here.name
 
-for _p in [str(_here), str(_parent)]:
+# _parent.parent holds the IP_refactored package (for the shared gemini_utils).
+for _p in [str(_here), str(_parent), str(_parent.parent)]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+from IP_refactored.gemini_utils import gemini_generate_async
 
 
 # ─────────────────────────────────────────────
 # Config
 # ─────────────────────────────────────────────
 
-_api_key      = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-_gemini       = genai.Client(api_key=_api_key)
 _GEMINI_MODEL = "gemini-2.5-flash"
 
 _CURRENT_YEAR  = datetime.now().year
@@ -433,15 +432,10 @@ async def _search_company_for_drug(drug_name: str) -> str:
         f'Search the web thoroughly. Return ONLY the company name. No explanation.'
     )
     try:
-        response = await _gemini.aio.models.generate_content(
-            model=_GEMINI_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                temperature=0.1,
-            ),
+        response = await gemini_generate_async(
+            prompt, _GEMINI_MODEL, google_search=True, temperature=0.1,
         )
-        name = (response.text or "").strip().strip(".")
+        name =(response.text or "").strip().strip(".")
         print(f"[SEARCH FALLBACK] Company for '{drug_name}': {name}")
         return name or ""
     except Exception as e:
@@ -468,13 +462,8 @@ Analyse:
 Provide a detailed summary with specific patent numbers and filing dates where available.
 """
     try:
-        response = await _gemini.aio.models.generate_content(
-            model=_GEMINI_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                temperature=0.2,
-            ),
+        response = await gemini_generate_async(
+            prompt, _GEMINI_MODEL, google_search=True, temperature=0.2,
         )
         result = (response.text or "").strip()
         if result:
@@ -504,13 +493,8 @@ Search the web for:
 Provide a detailed summary with specific numbers, dates, and quotes where available.
 """
     try:
-        response = await _gemini.aio.models.generate_content(
-            model=_GEMINI_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                temperature=0.2,
-            ),
+        response = await gemini_generate_async(
+            prompt, _GEMINI_MODEL, google_search=True, temperature=0.2,
         )
         result = (response.text or "").strip()
         if result:
@@ -912,15 +896,10 @@ CRITICAL RULES:
 """
 
     try:
-        response = await _gemini.aio.models.generate_content(
-            model=_GEMINI_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                temperature=0.2,
-            ),
+        response = await gemini_generate_async(
+            prompt, _GEMINI_MODEL, google_search=True, temperature=0.2,
         )
-        raw = (response.text or "").strip()
+        raw =(response.text or "").strip()
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):

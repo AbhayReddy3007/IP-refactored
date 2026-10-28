@@ -89,7 +89,21 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY", "")
 GEMINI_TEXT_MODEL      = os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash")
 GEMINI_EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
 
-GEMINI_FILE_SIZE_LIMIT_MB = int(os.getenv("GEMINI_FILE_SIZE_LIMIT_MB", "2000"))
+# Every Gemini call goes through gemini_utils (Vertex AI, ADC + PROJECT_ID).
+GEMINI_LOCATION           = os.getenv("GEMINI_LOCATION", "global")
+GEMINI_EMBEDDING_LOCATION = os.getenv("GEMINI_EMBEDDING_LOCATION", "us-central1")
+# "flex" tries the flex tier first and falls back to standard; empty = standard only.
+GEMINI_SERVICE_TIER       = os.getenv("GEMINI_SERVICE_TIER", "")
+# Optional thinking level (MINIMAL / LOW / MEDIUM / HIGH). Leave empty for models
+# without thinking levels (e.g. gemini-2.5-flash).
+GEMINI_THINKING_LEVEL     = os.getenv("GEMINI_THINKING_LEVEL", "")
+
+# Per-run Gemini usage (one row per model per drug): fully-qualified BigQuery table.
+GEMINI_STATS_TABLE        = os.getenv("GEMINI_STATS_TABLE", f"{PROJECT_ID}.{BQ_DATASET_ID}.gemini_stats")
+GEMINI_STATS_DIMENSION    = os.getenv("GEMINI_STATS_DIMENSION", "Primary Market Entry Horizon")
+
+# PDFs are sent inline to Gemini (Vertex has no Files API), so this caps the PDF size.
+GEMINI_FILE_SIZE_LIMIT_MB = int(os.getenv("GEMINI_FILE_SIZE_LIMIT_MB", "50"))
 MAX_UPLOAD_RETRIES        = int(os.getenv("MAX_UPLOAD_RETRIES", "3"))
 MAX_EMBED_RETRIES         = int(os.getenv("MAX_EMBED_RETRIES", "3"))
 

@@ -25,14 +25,15 @@ Usage:
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from .. import config
 from ..blocking_analysis import run_blocking_analysis
 from ..drug_list import resolve_drug_name
 from ..chunking.indexer import get_or_create_collection, indexer as run_indexer
+from ..gemini_utils import get_gemini_call_stats, reset_gemini_call_stats
 from ..patent_filter import patent_filter
-from .bq_utils import publish_table
+from .bq_utils import append_gemini_stats_to_bigquery, publish_table
 from .score_calculation import (
     assign_patent_phases,
     calculate_scores,
@@ -84,7 +85,39 @@ def publish_loe_tables(patents: List[Dict], drug_name: str, run_ts: str) -> Dict
     return outputs
 
 
+def _save_gemini_stats(drug_name: str, run_status: str, error: Optional[str], elapsed: float) -> None:
+    """Write this drug's Gemini usage to config.GEMINI_STATS_TABLE; never raises."""
+    try:
+        append_gemini_stats_to_bigquery(
+            drug_name, config.GEMINI_STATS_DIMENSION, get_gemini_call_stats(),
+            run_status, error_message=error, execution_time_seconds=round(elapsed, 3),
+        )
+    except Exception:
+        logger.exception("[HORIZON] Could not write Gemini stats for %r", drug_name)
+
+
 async def primary_market_entry_horizon(drug_name: str, reindex: bool = False) -> dict:
+    """
+    Full primary-market-entry-horizon pipeline for ONE drug, plus a Gemini usage
+    row per model in config.GEMINI_STATS_TABLE (written even when the run fails).
+    See _run_horizon() for the arguments and return value.
+    """
+    reset_gemini_call_stats()
+    t0 = time.time()
+    run_status, error = "success", None
+    try:
+        result = await _run_horizon(drug_name, reindex)
+        if result.get("error"):
+            run_status, error = "failed", result["error"]
+        return result
+    except Exception as e:
+        run_status, error = "failed", str(e)
+        raise
+    finally:
+        _save_gemini_stats(resolve_drug_name(drug_name), run_status, error, time.time() - t0)
+
+
+async def _run_horizon(drug_name: str, reindex: bool = False) -> dict:
     """
     Full primary-market-entry-horizon pipeline for ONE drug.
 

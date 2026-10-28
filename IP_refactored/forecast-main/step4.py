@@ -62,7 +62,8 @@ def log_error(msg):
 _here = Path(__file__).resolve().parent
 _parent = _here.parent
 
-for _p in [str(_here), str(_parent)]:
+# _parent.parent holds the IP_refactored package (for the shared gemini_utils).
+for _p in [str(_here), str(_parent), str(_parent.parent)]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
@@ -78,14 +79,9 @@ from cog import drug_filter
 # ─────────────────────────────────────────────
 # Gemini configuration (for inlined analysis)
 # ─────────────────────────────────────────────
-from google import genai
-from google.genai import types
+from IP_refactored.gemini_utils import gemini_generate_async
 
-_GEMINI_API_KEY        = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 _GEMINI_MODEL          = "gemini-2.5-flash"
-_GEMINI_MAX_RETRIES    = 3      # API-level retries inside one analysis call
-_GEMINI_INITIAL_BACKOFF = 2.0
-_gemini_client = genai.Client(api_key=_GEMINI_API_KEY) if _GEMINI_API_KEY else None
 
 _REGISTRIES = [
     {"name": "ClinicalTrials.gov",          "url": "https://clinicaltrials.gov/"},
@@ -113,50 +109,14 @@ except Exception as _ve:
 # Gemini call helpers (inlined from test_innovator_filing_patterns)
 # ─────────────────────────────────────────────
 
-def _sync_gemini_call(model: str, contents: list, config) -> str:
-    """Synchronous streaming Gemini API call. Called via asyncio.to_thread."""
-    if _gemini_client is None:
-        raise RuntimeError(
-            "GEMINI_API_KEY / GOOGLE_API_KEY not set — Step 4 cannot run "
-            "innovator filing pattern analysis."
-        )
-    response_text = ""
-    print("  Receiving", end="", flush=True)
-    for chunk in _gemini_client.models.generate_content_stream(
-        model=model, contents=contents, config=config,
-    ):
-        if chunk.text:
-            response_text += chunk.text
-            print(".", end="", flush=True)
-    print(" Done!")
-    return response_text.strip()
-
-
 async def _gemini_call_with_search(prompt: str) -> str:
-    """Gemini call with Google Search grounding + 429/quota retry backoff."""
-    contents = [types.Content(role="user", parts=[types.Part.from_text(text=prompt)])]
-    tools    = [types.Tool(google_search=types.GoogleSearch())]
-    config   = types.GenerateContentConfig(tools=tools)
-
-    retry_count   = 0
-    backoff_delay = _GEMINI_INITIAL_BACKOFF
-
-    while retry_count <= _GEMINI_MAX_RETRIES:
-        try:
-            return await asyncio.to_thread(_sync_gemini_call, _GEMINI_MODEL, contents, config)
-        except Exception as e:
-            if any(err in str(e).lower() for err in ["429", "rate limit", "quota"]):
-                retry_count += 1
-                if retry_count > _GEMINI_MAX_RETRIES:
-                    print(f"  Max retries exceeded: {e}")
-                    raise
-                print(f"  Rate limit hit, waiting {backoff_delay}s...")
-                await asyncio.sleep(backoff_delay)
-                backoff_delay *= 2
-            else:
-                print(f"  Gemini API error: {e}")
-                raise
-    return ""
+    """Gemini call with Google Search grounding (gemini_utils retries with back-off)."""
+    try:
+        response = await gemini_generate_async(prompt, _GEMINI_MODEL, google_search=True)
+    except Exception as e:
+        print(f"  Gemini API error: {e}")
+        raise
+    return (response.text or "").strip()
 
 
 def _parse_json_response(response: str) -> dict:

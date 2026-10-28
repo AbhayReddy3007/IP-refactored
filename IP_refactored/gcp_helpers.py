@@ -25,7 +25,8 @@ from google.api_core.exceptions import NotFound
 from google.cloud import bigquery
 
 from .config import GCS_BUCKET, GEMINI_TEXT_MODEL, MAX_ANALYSIS_RETRIES
-from .gcp_utils import get_bq_client, get_gcs_client, get_gemini_client
+from .gcp_utils import get_bq_client, get_gcs_client
+from .gemini_utils import gemini_generate_async
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +38,6 @@ async def call_gemini_json(prompt: str, filename: str, step: str) -> Optional[Di
     On truncation retry, appends a concise-output instruction to reduce token usage.
     Used by every blocking-analysis step (1-5).
     """
-    from google.genai import types
-
     _CONCISE_SUFFIX = (
         "\n\nIMPORTANT: Your previous response was truncated. "
         "Return ONLY the JSON object. Keep every string field under 60 words. "
@@ -50,14 +49,12 @@ async def call_gemini_json(prompt: str, filename: str, step: str) -> Optional[Di
             # On retry after truncation, ask for a more concise response
             current_prompt = prompt if attempt == 1 else prompt + _CONCISE_SUFFIX
 
-            response = await get_gemini_client().aio.models.generate_content(
-                model=GEMINI_TEXT_MODEL,
-                contents=current_prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.1,
-                    max_output_tokens=8192,
-                ),
+            response = await gemini_generate_async(
+                current_prompt,
+                GEMINI_TEXT_MODEL,
+                response_mime_type="application/json",
+                temperature=0.1,
+                max_output_tokens=8192,
             )
 
             raw_text = response.text if response.text else ""
