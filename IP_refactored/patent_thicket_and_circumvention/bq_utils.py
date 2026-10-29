@@ -81,6 +81,9 @@ def _coerce(df: pd.DataFrame, schema: list) -> pd.DataFrame:
             df[field.name] = pd.to_numeric(df[field.name], errors="coerce").round(0).astype("Int64")
         elif kind in ("FLOAT", "FLOAT64", "NUMERIC"):
             df[field.name] = pd.to_numeric(df[field.name], errors="coerce")
+        elif kind in ("TIMESTAMP", "DATETIME"):
+            # updated_at is an ISO string; a TIMESTAMP column needs real datetimes.
+            df[field.name] = pd.to_datetime(df[field.name], errors="coerce", utc=True)
     return df
 
 
