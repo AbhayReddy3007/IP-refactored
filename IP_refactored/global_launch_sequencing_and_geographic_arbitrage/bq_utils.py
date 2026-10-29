@@ -10,7 +10,8 @@ Reads:
 
 Writes (each run replaces only that drug's rows, so re-runs never duplicate):
     write_launch_patents(drug, df)    one row per shortlisted jurisdiction patent   (config.BQ_LAUNCH_PATENTS_TABLE)
-    write_arbitrage(drug, df)         one row per jurisdiction, in launch order      (config.BQ_ARBITRAGE_TABLE)
+    write_arbitrage(drug, df, rationale)   one row per jurisdiction, in launch order, each with the drug's
+                                      rationale; Dimension IV Score is stored as Score  (config.BQ_ARBITRAGE_TABLE)
 
 All BigQuery access goes through IP_refactored.gcp_helpers / the shared bq_utils; table IDs come from IP_refactored.config.
 """
@@ -40,6 +41,8 @@ _ARBITRAGE_COLUMNS = (
     "Gap vs Longest LOE (Years)", "Country-to-Country Arbitrage (Years)", "Key Protection Gap",
     "Arbitrage Score", "Arbitrage Signal", "Dimension IV Score", "Dimension IV Rating",
 )
+# Columns stored under another name in the arbitrage table.
+_ARBITRAGE_RENAMES = {"Dimension IV Score": "Score"}
 
 
 def snake_case(name: str) -> str:
@@ -55,7 +58,8 @@ LAUNCH_PATENTS_SCHEMA = [
     bigquery.SchemaField("created_at", "TIMESTAMP"),
 ]
 ARBITRAGE_SCHEMA = [
-    *[bigquery.SchemaField(snake_case(c), "STRING") for c in _ARBITRAGE_COLUMNS],
+    *[bigquery.SchemaField(snake_case(_ARBITRAGE_RENAMES.get(c, c)), "STRING") for c in _ARBITRAGE_COLUMNS],
+    bigquery.SchemaField("rationale", "STRING"),
     bigquery.SchemaField("updated_at", "STRING"),
     bigquery.SchemaField("created_at", "TIMESTAMP"),
 ]
@@ -103,12 +107,15 @@ def load_analysis_cache(drug: str) -> tuple[dict, dict]:
 # Writes
 # ─────────────────────────────────────────────
 
-def _rows(df: pd.DataFrame, columns: tuple) -> list:
-    """The frame's rows as dicts with snake_case keys and text values, stamped with updated_at."""
+def _rows(df: pd.DataFrame, columns: tuple, renames: dict = None, **extra) -> list:
+    """The frame's rows as dicts with snake_case keys (columns in *renames* stored under the new name) and
+    text values, plus the *extra* fields, stamped with updated_at."""
+    renames = renames or {}
     updated_at = now_iso()
     rows = []
     for record in df.reindex(columns=list(columns)).to_dict("records"):
-        rows.append({**{snake_case(c): stringify_cell(v) for c, v in record.items()}, "updated_at": updated_at})
+        rows.append({**{snake_case(renames.get(c, c)): stringify_cell(v) for c, v in record.items()},
+                     **extra, "updated_at": updated_at})
     return rows
 
 
@@ -117,6 +124,8 @@ def write_launch_patents(drug: str, df: pd.DataFrame) -> None:
     write_drug_rows(_rows(df, _PATENT_COLUMNS), config.BQ_LAUNCH_PATENTS_TABLE, LAUNCH_PATENTS_SCHEMA, drug)
 
 
-def write_arbitrage(drug: str, df: pd.DataFrame) -> None:
-    """Replace the drug's rows in config.BQ_ARBITRAGE_TABLE with the arbitrage summary."""
-    write_drug_rows(_rows(df, _ARBITRAGE_COLUMNS), config.BQ_ARBITRAGE_TABLE, ARBITRAGE_SCHEMA, drug)
+def write_arbitrage(drug: str, df: pd.DataFrame, rationale: str = "") -> None:
+    """Replace the drug's rows in config.BQ_ARBITRAGE_TABLE with the arbitrage summary; every row carries
+    the drug's rationale, and the Dimension IV score is stored as Score."""
+    rows = _rows(df, _ARBITRAGE_COLUMNS, _ARBITRAGE_RENAMES, rationale=rationale)
+    write_drug_rows(rows, config.BQ_ARBITRAGE_TABLE, ARBITRAGE_SCHEMA, drug)
