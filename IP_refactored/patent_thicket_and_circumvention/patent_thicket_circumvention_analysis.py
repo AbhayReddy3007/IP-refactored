@@ -13,7 +13,7 @@ Orchestrates the IP "Patent Thicket and Circumvention Feasibility" dimension for
     4. Circumvention analysis per claim category: patent chunks from AlloyDB + Gemini +
        Google Search grounding; finished categories are cached in GCS   (circumvention, checkpoint)
     5. Rationale: a summary of the drug written from the scores and the analysis; generated on
-       every run, not stored in BigQuery                       (generate_report_and_rationale.generate_rationale)
+       every run; stored in the Rationale column of the score table                       (generate_report_and_rationale.generate_rationale)
     6. PDF report built from the run's results, uploaded to GCS on every run
                                                                (generate_report_and_rationale.generate_report)
     7. Circumvention_Table + Patent_Thicket_Score_Table -> BigQuery; each run replaces only
@@ -130,7 +130,7 @@ async def _run(drug_name: str, reset: bool) -> dict:
 
     # Step 7: BigQuery
     await asyncio.to_thread(write_circumvention_to_bq, drug, circumvention)
-    await asyncio.to_thread(write_score_to_bq, drug_score)
+    await asyncio.to_thread(write_score_to_bq, drug_score, rationale)
 
     elapsed = time.time() - t0
     logger.info("[THICKET] Done in %.1fs - %d NON-BLOCKING row(s), %d categor(ies) | average score %s",

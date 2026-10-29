@@ -43,11 +43,11 @@ CIRCUMVENTION_SCHEMA = [
 SCORE_SCHEMA = [
     *[bigquery.SchemaField(name, "STRING") for name in (
         "Drug_Name", "Jurisdiction", "Active_Categories", "Density_Interpretation",
-        "Diversity_Interpretation", "Score_Label", "updated_at")],
+        "Diversity_Interpretation", "Score_Label", "Rationale", "updated_at")],
     *[bigquery.SchemaField(name, "INTEGER") for name in (
         "Combined_Total", "Forecasted_Total", "Active_Technology_Areas", "Density_Score",
         "Diversity_Score", "Base_Score")],
-    *[bigquery.SchemaField(name, "FLOAT64") for name in ("Adjusted_Count", "Validation_Pct", "Final_Score")],
+    *[bigquery.SchemaField(name, "FLOAT64") for name in ("Adjusted_Count", "Validation_Pct", "Score")],
     bigquery.SchemaField("created_at", "TIMESTAMP"),
 ]
 
@@ -155,8 +155,8 @@ def write_circumvention_to_bq(drug: str, circ_data: dict) -> None:
 # Write — Patent_Thicket_Score_Table
 # ─────────────────────────────────────────────
 
-def build_score_rows(drug_score: dict, updated_at: str) -> list:
-    """One row per jurisdiction, plus a 'Final Score (Average)' row for the drug."""
+def build_score_rows(drug_score: dict, updated_at: str, rationale: str = "") -> list:
+    """One row per jurisdiction, plus a 'Final Score (Average)' row for the drug; each carries the drug's rationale."""
     drug = drug_score["drug"]
     rows = [{
         "Drug_Name":                drug,
@@ -172,8 +172,9 @@ def build_score_rows(drug_score: dict, updated_at: str) -> list:
         "Diversity_Score":          jd["diversity_score"],
         "Base_Score":               jd["base_score"],
         "Validation_Pct":           jd["validation_pct"],
-        "Final_Score":              jd["final_score"],
+        "Score":                    jd["final_score"],
         "Score_Label":              jd["final_label"],
+        "Rationale":                rationale,  # the drug's summary, repeated on each of its rows
         "updated_at":               updated_at,
     } for jd in drug_score.get("jurisdiction_scores", [])]
 
@@ -184,14 +185,15 @@ def build_score_rows(drug_score: dict, updated_at: str) -> list:
         "Active_Categories":        "",
         "Density_Interpretation":   "",
         "Diversity_Interpretation": "",
-        "Final_Score":              avg_final,
+        "Score":                    avg_final,
         "Score_Label":              THICKET_SCORE_LABELS.get(max(1, min(5, round(avg_final))), ""),
+        "Rationale":                rationale,
         "updated_at":               updated_at,
     })
     return rows
 
 
-def write_score_to_bq(drug_score: dict) -> None:
+def write_score_to_bq(drug_score: dict, rationale: str = "") -> None:
     """Replace the drug's rows in config.BQ_THICKET_SCORE_TABLE with the new scores."""
-    rows = build_score_rows(drug_score, now_iso())
+    rows = build_score_rows(drug_score, now_iso(), rationale)
     _write_rows(rows, config.BQ_THICKET_SCORE_TABLE, SCORE_SCHEMA, drug_score["drug"])
