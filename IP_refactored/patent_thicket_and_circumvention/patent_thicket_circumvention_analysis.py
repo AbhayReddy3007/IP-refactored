@@ -12,7 +12,11 @@ Orchestrates the IP "Patent Thicket and Circumvention Feasibility" dimension for
        the drug-level average                                  (scoring.score_drug)
     4. Circumvention analysis per claim category: patent chunks from AlloyDB + Gemini +
        Google Search grounding; finished categories are cached in GCS   (circumvention, checkpoint)
-    5. Circumvention_Table + Patent_Thicket_Score_Table -> BigQuery; each run replaces only
+    5. Rationale: a summary of the drug written from the scores and the analysis; generated on
+       every run, not stored in BigQuery                       (generate_report_and_rationale.generate_rationale)
+    6. PDF report built from the run's results, uploaded to GCS on every run
+                                                               (generate_report_and_rationale.generate_report)
+    7. Circumvention_Table + Patent_Thicket_Score_Table -> BigQuery; each run replaces only
        that drug's rows                                        (bq_utils)
 
 Input is glp_master_loe, so run primary_market_entry_horizon for the drug first.
@@ -36,8 +40,24 @@ from .scoring.checkpoint import load_circumvention_cache, save_circumvention_cac
 from .scoring.circumvention import group_patents_by_category, run_circumvention_analysis
 from .retrieval.data_prep import get_claim_categories, load_master_data, select_non_blocking
 from .scoring.scoring import score_drug
+from .generate_report_and_rationale.generate_rationale import rationale_for_drug
 
 logger = logging.getLogger(__name__)
+
+
+def _generate_report(drug: str, drug_score: dict, circumvention: dict, rationale: str) -> dict:
+    """Build and upload the dimension's report; {"error": ...} if it fails."""
+    # Imported here so reportlab is only needed when a report is built.
+    from .generate_report_and_rationale.generate_report import report_for_drug
+
+    logger.info("[THICKET] Generating the %s report ...", config.DIMENSION_PATENT_THICKET)
+    try:
+        report = report_for_drug(drug, drug_score, circumvention, rationale)
+    except Exception as e:
+        logger.exception("[THICKET] Report failed for %r", drug)
+        return {"error": str(e), "gcs_uri": None, "archive_uri": None}
+    logger.info("[THICKET] Report -> %s", report["gcs_uri"])
+    return report
 
 
 async def patent_thicket_and_circumvention(drug_name: str, reset: bool = False) -> dict:
@@ -51,7 +71,8 @@ async def patent_thicket_and_circumvention(drug_name: str, reset: bool = False) 
 
     Returns:
         {"drug_name", "non_blocking_patents", "avg_final_score", "categories_analysed",
-         "processing_time_seconds", "output_tables": [...]}
+         "processing_time_seconds", "output_tables": [...], "rationale",
+         "report": {"gcs_uri", "archive_uri"} or {"error"}}
         or {"drug_name", "error", ...} if the drug has no glp_master_loe rows.
     """
     reset_gemini_call_stats()
@@ -84,7 +105,8 @@ async def _run(drug_name: str, reset: bool) -> dict:
     non_blocking = select_non_blocking(df, drug)
     if non_blocking.empty:
         return {"drug_name": drug, "non_blocking_patents": 0, "avg_final_score": None,
-                "categories_analysed": [], "processing_time_seconds": round(time.time() - t0, 1), "output_tables": []}
+                "categories_analysed": [], "processing_time_seconds": round(time.time() - t0, 1), "output_tables": [],
+                "rationale": config.NO_QUALIFYING_PATENTS_RATIONALE}
 
     # Step 3: thicket score
     drug_score = score_drug(drug, non_blocking, df, all_categories)
@@ -99,7 +121,14 @@ async def _run(drug_name: str, reset: bool) -> dict:
     circumvention = await run_circumvention_analysis(drug, group_patents_by_category(non_blocking), cached)
     await asyncio.to_thread(save_circumvention_cache, drug, circumvention["results_by_category"])
 
-    # Step 5: BigQuery
+    # Step 5: rationale — the drug's summary, generated on every run (not stored in BigQuery)
+    rationale = await asyncio.to_thread(rationale_for_drug, drug, drug_score, circumvention)
+
+    # Step 6: the dimension's PDF report, built from this run's results. A failed report is
+    # recorded in the result but does not fail the run.
+    report = await asyncio.to_thread(_generate_report, drug, drug_score, circumvention, rationale)
+
+    # Step 7: BigQuery
     await asyncio.to_thread(write_circumvention_to_bq, drug, circumvention)
     await asyncio.to_thread(write_score_to_bq, drug_score)
 
@@ -113,4 +142,6 @@ async def _run(drug_name: str, reset: bool) -> dict:
         "categories_analysed":     circumvention["categories_analysed"],
         "processing_time_seconds": round(elapsed, 1),
         "output_tables":           [config.BQ_CIRCUMVENTION_TABLE, config.BQ_THICKET_SCORE_TABLE],
+        "rationale":               rationale,
+        "report":                  report,
     }

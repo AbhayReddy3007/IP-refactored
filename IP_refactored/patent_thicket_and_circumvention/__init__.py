@@ -17,6 +17,9 @@ primary_market_entry_horizon) and writes Circumvention_Table + Patent_Thicket_Sc
         prompts.py          the Gemini prompts
         checkpoint.py       per-drug GCS cache of finished circumvention results
         constants.py        excluded categories, limits, concurrency
+    generate_report_and_rationale/   written on every run
+        generate_rationale.py   the drug's summary of the scores and the design-around analysis (not stored in BigQuery)
+        generate_report.py      the PDF report, uploaded to GCS
 """
 
 from .patent_thicket_circumvention_analysis import patent_thicket_and_circumvention

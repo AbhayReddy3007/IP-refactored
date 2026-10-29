@@ -249,6 +249,12 @@ GCS_JSON_EXPORT = os.getenv("GCS_JSON_EXPORT", "loe_json_exports")
 #   patent_thicket_and_circumvention — only that dimension (needs the drug's glp_master_loe rows)
 IP_DIMENSION = os.getenv("IP_DIMENSION", "patent_thicket_and_circumvention").strip().lower()
 
+# Rationale of a drug that has no patents for a dimension to assess (patent_strength, patent_thicket_and_circumvention).
+NO_QUALIFYING_PATENTS_RATIONALE = (
+    "No qualifying patents were found based on the currently assessment. "
+    "This analysis will be updated if additional relevant patent information becomes available."
+)
+
 # When True, forecasted_loe rows for Marketed/Pre-registration drugs are kept
 # (real LOE data does NOT supersede the forecast).
 # Default False: real data supersedes forecasts for Marketed/Pre-reg drugs.

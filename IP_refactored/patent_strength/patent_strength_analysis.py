@@ -180,6 +180,7 @@ async def _run_patent_strength(drug_name: str, reset: bool) -> dict:
         return {
             "drug_name": drug_name, "patents_scored": 0, "final_patent_score": None,
             "processing_time_seconds": round(time.time() - t0, 1), "output_tables": [],
+            "rationale": config.NO_QUALIFYING_PATENTS_RATIONALE,
         }
 
     # Steps 3-4: sub-factor scoring (cached sub-factors are not re-run)
