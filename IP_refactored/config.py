@@ -100,6 +100,7 @@ GEMINI_THINKING_LEVEL     = os.getenv("GEMINI_THINKING_LEVEL", "")
 # Names of the IP dimensions. Each is the dimension's report file name (see
 # REPORT_GCS_PATH) and the "dimension" recorded in the Gemini usage table (GEMINI_STATS_TABLE).
 DIMENSION_PRIMARY_MARKET_ENTRY_HORIZON = os.getenv("DIMENSION_PRIMARY_MARKET_ENTRY_HORIZON", "Primary Market Entry Horizon")
+DIMENSION_BLOCKING_ANALYSIS             = os.getenv("DIMENSION_BLOCKING_ANALYSIS", "Blocking Analysis")
 DIMENSION_PATENT_STRENGTH              = os.getenv("DIMENSION_PATENT_STRENGTH", "Patent Strength and Invalidity Opportunity")
 DIMENSION_PATENT_THICKET               = os.getenv("DIMENSION_PATENT_THICKET", "Patent Thicket and Circumvention Feasibility")
 

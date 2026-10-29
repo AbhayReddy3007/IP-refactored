@@ -16,6 +16,8 @@ Orchestrates the whole IP Dimension 1 process for one drug:
     9. glp_patent_loe: patents + scores -> BigQuery + JSON in GCS   (score_calculation.merge_forecasted_loe, bq_utils)
    10. glp_master_loe: merged with forecasted_loe, re-scored -> BigQuery + JSON in GCS
    11. PDF report built from the glp_master_loe rows, uploaded to GCS  (generate_report_and_rationale.generate_report)
+   12. Blocking Analysis PDF report, written from the analysed patents and uploaded next to it
+                                                        (blocking_analysis.generate_report)
 
 Usage:
     from IP_refactored.primary_market_entry_horizon import primary_market_entry_horizon
@@ -99,6 +101,21 @@ def _generate_report(drug_name: str) -> Dict:
         logger.exception("[HORIZON] Report failed for %r", drug_name)
         return {"error": str(e), "gcs_uri": None, "archive_uri": None}
     logger.info("[HORIZON] Report -> %s", report["gcs_uri"])
+    return report
+
+
+def _generate_blocking_report(drug_name: str, patents: List[Dict]) -> Dict:
+    """Build and upload the Blocking Analysis report; {"error": ...} if it fails."""
+    # Imported here so reportlab is only needed when a report is built.
+    from ..blocking_analysis.generate_report import report_for_drug
+
+    logger.info("[HORIZON] Generating the %s report ...", config.DIMENSION_BLOCKING_ANALYSIS)
+    try:
+        report = report_for_drug(drug_name, patents)
+    except Exception as e:
+        logger.exception("[HORIZON] Blocking Analysis report failed for %r", drug_name)
+        return {"error": str(e), "gcs_uri": None, "archive_uri": None}
+    logger.info("[HORIZON] Blocking Analysis report -> %s", report["gcs_uri"])
     return report
 
 
@@ -200,6 +217,9 @@ async def _run_horizon(drug_name: str, reindex: bool = False) -> dict:
     # A failed report is recorded in the result but does not fail the run.
     report = _generate_report(drug_name)
 
+    # Step 12: the Blocking Analysis report, from the analysed patents. Same handling as step 11.
+    blocking_report = _generate_blocking_report(drug_name, patents)
+
     elapsed = time.time() - t0
     logger.info("[HORIZON] Done in %.1fs - %d patent(s)", elapsed, len(patents))
     for table_id, out in loe_tables.items():
@@ -214,4 +234,5 @@ async def _run_horizon(drug_name: str, reindex: bool = False) -> dict:
         "phase_data_source":       timeline.get("source", "unavailable"),
         "loe_tables":              loe_tables,
         "report":                  report,
+        "blocking_report":         blocking_report,
     }
