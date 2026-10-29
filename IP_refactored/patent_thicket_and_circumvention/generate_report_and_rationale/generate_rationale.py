@@ -46,7 +46,7 @@ def _label(score) -> str:
     return THICKET_SCORE_LABELS.get(max(1, min(5, round(score))), "") if score else ""
 
 
-def _data_block(drug_score: dict, circumvention: dict) -> str:
+def data_block(drug_score: dict, circumvention: dict) -> str:
     rows = [
         f"Average thicket score: {_fmt(drug_score['avg_final_score'])} / 5 ({_label(drug_score['avg_final_score'])})",
         f"NON-BLOCKING patents counted: {drug_score['total_patents']} across {drug_score['active_areas']} claim "
@@ -98,7 +98,7 @@ def _fallback_rationale(drug: str, drug_score: dict, circumvention: dict) -> str
 
 def rationale_for_drug(drug: str, drug_score: dict, circumvention: dict) -> str:
     """The drug's rationale (no length limit)."""
-    prompt = RATIONALE_PROMPT.format(drug=drug, data=_data_block(drug_score, circumvention))
+    prompt = RATIONALE_PROMPT.format(drug=drug, data=data_block(drug_score, circumvention))
     try:
         text = gemini_api_call(prompt, config.GEMINI_TEXT_MODEL, temperature=0.2).strip()
         if text:
