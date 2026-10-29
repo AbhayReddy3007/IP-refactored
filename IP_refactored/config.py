@@ -103,7 +103,8 @@ DIMENSION_PRIMARY_MARKET_ENTRY_HORIZON = os.getenv("DIMENSION_PRIMARY_MARKET_ENT
 DIMENSION_BLOCKING_ANALYSIS             = os.getenv("DIMENSION_BLOCKING_ANALYSIS", "Blocking Analysis")
 DIMENSION_PATENT_STRENGTH              = os.getenv("DIMENSION_PATENT_STRENGTH", "Patent Strength and Invalidity Opportunity")
 DIMENSION_PATENT_THICKET               = os.getenv("DIMENSION_PATENT_THICKET", "Patent Thicket and Circumvention Feasibility")
-DIMENSION_GLOBAL_LAUNCH                = os.getenv("DIMENSION_GLOBAL_LAUNCH", "Global Launch Sequencing and Geographic Arbitrage")
+DIMENSION_GLOBAL_LAUNCH                = os.getenv("DIMENSION_GLOBAL_LAUNCH", "Global Launch Sequencing & Arbitrage")
+DIMENSION_PTE_ANALYSIS                 = os.getenv("DIMENSION_PTE_ANALYSIS", "PTE Analysis")
 
 # PDFs are sent inline to Gemini (Vertex has no Files API), so this caps the PDF size.
 GEMINI_FILE_SIZE_LIMIT_MB = int(os.getenv("GEMINI_FILE_SIZE_LIMIT_MB", "50"))

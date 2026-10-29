@@ -14,7 +14,8 @@ Orchestrates the IP "Global Launch Sequencing and Geographic Arbitrage" dimensio
        drug's Dimension IV score and rating                                 (arbitrage)
     6. Rationale: a summary of the drug written from the launch order and arbitrage scores;
        generated on every run                                               (generate_report_and_rationale.generate_rationale)
-    7. PDF report built from the run's results, uploaded to GCS on every run
+    7. Two PDF reports built from the run's results, uploaded to GCS on every run: the Global Launch
+       Sequencing and Geographic Arbitrage report and the PTE Analysis report
                                                                             (generate_report_and_rationale.generate_report)
     8. shortlisted_secondary_patents_table + arbitrage_summary_table (with the rationale) -> BigQuery;
        each run replaces only that drug's rows                              (bq_utils)
@@ -49,19 +50,27 @@ from .pte import fill_pte
 logger = logging.getLogger(__name__)
 
 
-def _generate_report(drug: str, arbitrage, rationale: str) -> dict:
-    """Build and upload the dimension's report; {"error": ...} if it fails."""
+def _generate_reports(drug: str, shortlisted, arbitrage, rationale: str) -> dict:
+    """Build and upload the dimension's two reports: {"report": ..., "pte_report": ...}, each with an
+    "error" instead of its URIs if it fails."""
     # Imported here so reportlab is only needed when a report is built.
-    from .generate_report_and_rationale.generate_report import report_for_drug
+    from .generate_report_and_rationale.generate_report import generate_dim4_report, generate_pte_report
 
-    logger.info("[LAUNCH] Generating the %s report ...", config.DIMENSION_GLOBAL_LAUNCH)
-    try:
-        report = report_for_drug(drug, arbitrage, rationale)
-    except Exception as e:
-        logger.exception("[LAUNCH] Report failed for %r", drug)
-        return {"error": str(e), "gcs_uri": None, "archive_uri": None}
-    logger.info("[LAUNCH] Report -> %s", report["gcs_uri"])
-    return report
+    builds = {
+        "report": (config.DIMENSION_GLOBAL_LAUNCH, lambda: generate_dim4_report.report_for_drug(drug, arbitrage, rationale)),
+        "pte_report": (config.DIMENSION_PTE_ANALYSIS, lambda: generate_pte_report.report_for_drug(drug, shortlisted, arbitrage)),
+    }
+    reports = {}
+    for key, (name, build) in builds.items():
+        logger.info("[LAUNCH] Generating the %s report ...", name)
+        try:
+            reports[key] = build()
+        except Exception as e:
+            logger.exception("[LAUNCH] %s report failed for %r", name, drug)
+            reports[key] = {"error": str(e), "gcs_uri": None, "archive_uri": None}
+            continue
+        logger.info("[LAUNCH] %s report -> %s", name, reports[key]["gcs_uri"])
+    return reports
 
 
 async def global_launch_sequencing_and_geographic_arbitrage(drug_name: str, reset: bool = False) -> dict:
@@ -76,7 +85,7 @@ async def global_launch_sequencing_and_geographic_arbitrage(drug_name: str, rese
     Returns:
         {"drug_name", "shortlisted_patents", "launch_order": [jurisdictions], "dimension_iv_score",
          "dimension_iv_rating", "processing_time_seconds", "output_tables": [...], "rationale",
-         "report": {"gcs_uri", "archive_uri"} or {"error"}}
+         "report" and "pte_report": {"gcs_uri", "archive_uri"} or {"error"}}
         or {"drug_name", "error", ...} if the drug has no glp_master_loe rows.
     """
     reset_gemini_call_stats()
@@ -123,8 +132,8 @@ async def global_launch_sequencing_and_geographic_arbitrage(drug_name: str, rese
 
         # Step 7: the dimension's PDF report, from this run's results. A failed report is recorded in
         # the result but does not fail the run.
-        report = (await asyncio.to_thread(_generate_report, drug, arbitrage, rationale)
-                  if not arbitrage.empty else {"gcs_uri": None, "archive_uri": None})
+        reports = (await asyncio.to_thread(_generate_reports, drug, shortlisted, arbitrage, rationale)
+                   if not arbitrage.empty else {})
 
         # Step 8: BigQuery
         await asyncio.to_thread(write_launch_patents, drug, shortlisted)
@@ -138,7 +147,7 @@ async def global_launch_sequencing_and_geographic_arbitrage(drug_name: str, rese
             dimension_iv_rating=dimension_iv_rating,
             output_tables=[config.BQ_LAUNCH_PATENTS_TABLE, config.BQ_ARBITRAGE_TABLE],
             rationale=rationale,
-            report=report,
+            **reports,
         )
     except Exception as e:
         run_status, error = "failed", str(e)

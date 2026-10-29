@@ -13,6 +13,7 @@ tables, the headline score strip, text helpers and the A4 document.
     document(output_path, title)               -> SimpleDocTemplate (A4, compact margins)
 """
 
+from numbers import Real
 from xml.sax.saxutils import escape
 
 from reportlab.lib import colors
@@ -89,7 +90,7 @@ def data_table(headers: list, rows: list, col_widths: list, st: dict, score_cols
         for ci, value in enumerate(data_row):
             text = "N/A" if value is None else str(value)
             style = st["tdl"] if ci in left_cols else st["td"]
-            if ci in score_cols and isinstance(value, (int, float)) and value:
+            if ci in score_cols and isinstance(value, Real) and not isinstance(value, bool) and value:
                 cells.append(Paragraph(f'<font color="{SCORE_COLORS[band(value)]}"><b>{esc(text)}</b></font>', style))
             else:
                 cells.append(Paragraph(esc(text), style))

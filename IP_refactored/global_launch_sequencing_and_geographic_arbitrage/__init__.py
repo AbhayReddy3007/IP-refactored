@@ -15,7 +15,7 @@ primary_market_entry_horizon) and writes shortlisted_secondary_patents_table + a
     constants.py    filters, jurisdictions, PTE rules
     generate_report_and_rationale/   written on every run
         generate_rationale.py   the drug's summary of the launch order and arbitrage (stored in the arbitrage table)
-        generate_report.py      the PDF report, uploaded to GCS
+        generate_report/        the PDF reports (Dimension IV report, PTE analysis), uploaded to GCS
 """
 
 from .global_launch_sequencing_and_geographic_arbitrage import global_launch_sequencing_and_geographic_arbitrage

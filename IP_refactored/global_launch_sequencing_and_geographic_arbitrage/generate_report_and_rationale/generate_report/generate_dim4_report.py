@@ -1,6 +1,6 @@
 """
-generate_report.py
-──────────────────
+generate_dim4_report.py
+───────────────────────
 Global Launch Sequencing and Geographic Arbitrage PDF report (2-3 pages), built from the run's own
 results (nothing is read back from BigQuery):
 
@@ -10,8 +10,8 @@ results (nothing is read back from BigQuery):
 
 Gemini writes the narrative sections from the arbitrage summary (a score-based fallback is used if
 it fails). The report is uploaded to gs://{REPORT_GCS_BUCKET}/{REPORT_GCS_PATH}/:
-    {drug}/{GCS_IP_SUBFOLDER}/Global Launch Sequencing and Geographic Arbitrage.pdf
-    {drug}/{GCS_IP_SUBFOLDER}/archive/Global Launch Sequencing and Geographic Arbitrage+{timestamp}.pdf
+    {drug}/{GCS_IP_SUBFOLDER}/Global Launch Sequencing & Arbitrage.pdf
+    {drug}/{GCS_IP_SUBFOLDER}/archive/Global Launch Sequencing & Arbitrage+{timestamp}.pdf
 (the file name is config.DIMENSION_GLOBAL_LAUNCH)
 
     report_for_drug(drug, arbitrage, rationale) -> {"gcs_uri", "archive_uri"}
@@ -25,10 +25,10 @@ from pathlib import Path
 import pandas as pd
 from reportlab.platypus import HRFlowable, Paragraph, Spacer
 
-from ... import config, report_utils as ru
-from ...gemini_utils import gemini_json_call
-from ...primary_market_entry_horizon.generate_report_and_rationale.generate_report import upload_report
-from .generate_rationale import data_block
+from .... import config, report_utils as ru
+from ....gemini_utils import gemini_json_call
+from ....primary_market_entry_horizon.generate_report_and_rationale.generate_report import upload_report
+from ..generate_rationale import data_block
 
 logger = logging.getLogger(__name__)
 

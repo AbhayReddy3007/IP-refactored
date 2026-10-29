@@ -61,6 +61,17 @@ PTE_RULES = {
     "MX": {"allowed": False, "note": "USMCA mandates PTE but implementing regulations incomplete"},
 }
 
+# Regulatory exclusivity rules quoted in the PTE report, by jurisdiction code.
+EXCLUSIVITY_RULES = {
+    "US": "5-yr NCE / 3-yr supplemental exclusivity (Hatch-Waxman); PTE up to 5 yrs (max 14 yrs from approval)",
+    "EU": "8+2+1 yr data/market exclusivity; SPC up to 5 yrs extra",
+    "CN": "6-yr data exclusivity (innovative drugs); PTE up to 5 yrs (effective patent term capped at 14 yrs from approval)",
+    "IN": "No PTE; no data exclusivity under current law",
+    "BR": "No PTE; pipeline patents allowed (Art. 230 now struck down); 5-yr data exclusivity for agrochemicals",
+    "AU": "5-yr data exclusivity; PTE up to 5 yrs (15-yr effective cap from first TGA approval)",
+    "RU": "6-yr data exclusivity; PTE up to 5 yrs",
+}
+
 PTE_REGISTRY_HINTS = {
     "CN": "CNIPA patent register",
     "AU": "AusPat (IP Australia)",
