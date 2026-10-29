@@ -32,7 +32,6 @@ import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from xml.sax.saxutils import escape
 
 import pandas as pd
 from reportlab.lib import colors
@@ -42,10 +41,9 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from ... import config, gcp_helpers
+from ... import config, gcp_helpers, report_utils as ru
 from ...drug_list import resolve_drug_name
 from ...gemini_utils import gemini_api_call
-from ...primary_market_entry_horizon.generate_report_and_rationale.generate_report import upload_report
 from ...utils import safe_name, setup_logging
 from ..scoring.constants import ACTIVE_SFS, SF_WEIGHTS
 
@@ -91,16 +89,8 @@ def _rl_styles() -> dict:
     }
 
 
-def _esc(text) -> str:
-    return escape(str(text)) if text is not None and not (isinstance(text, float) and pd.isna(text)) else ""
-
-
 def _num(value, decimals: int = 2) -> str:
     return "N/A" if value is None or pd.isna(value) else f"{float(value):.{decimals}f}"
-
-
-def _band(value) -> int:
-    return min(5, max(1, round(float(value))))
 
 
 # ─────────────────────────────────────────────
@@ -153,7 +143,7 @@ def compute_statistics(patents: pd.DataFrame) -> dict:
     if scored:
         stats["avg_weighted"] = round(sum(p["weighted"] for p in scored) / len(scored), 2)
         for s in range(1, 6):
-            stats["score_distribution"][s] = sum(1 for p in scored if _band(p["weighted"]) == s)
+            stats["score_distribution"][s] = sum(1 for p in scored if ru.band(p["weighted"]) == s)
         stats["highest"] = max(scored, key=lambda p: p["weighted"])
         for jur in sorted({p["jurisdiction"] for p in scored}):
             stats["highest_per_jurisdiction"][jur] = max(
@@ -259,7 +249,7 @@ Respond ONLY with a valid JSON object (no markdown fences):
 
 def _info_table(items: list, st: dict, width: float) -> Table:
     """A two-column label / value box."""
-    rows = [[Paragraph(f"<b>{_esc(label)}</b>", st["tdl"]), Paragraph(value, st["td"])] for label, value in items]
+    rows = [[Paragraph(f"<b>{ru.esc(label)}</b>", st["tdl"]), Paragraph(value, st["td"])] for label, value in items]
     table = Table(rows, colWidths=[width * 0.38, width * 0.62])
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#E8EDF3")),
@@ -270,40 +260,6 @@ def _info_table(items: list, st: dict, width: float) -> Table:
         ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
     ]))
     return table
-
-
-def _data_table(headers: list, rows: list, col_widths: list, st: dict, score_cols: tuple = (), left_cols: tuple = ()) -> Table:
-    """A table with a navy header; columns in *score_cols* are coloured by their 1-5 band."""
-    out = [[Paragraph(f"<b>{h}</b>", st["th"]) for h in headers]]
-    for data_row in rows:
-        cells = []
-        for ci, value in enumerate(data_row):
-            text = "N/A" if value is None or (not isinstance(value, str) and pd.isna(value)) else str(value)
-            style = st["tdl"] if ci in left_cols else st["td"]
-            if ci in score_cols and text != "N/A":
-                try:
-                    cells.append(Paragraph(f'<font color="{_SCORE_CLR[_band(value)]}"><b>{_esc(text)}</b></font>', style))
-                    continue
-                except (ValueError, TypeError):
-                    pass
-            cells.append(Paragraph(_esc(text), style))
-        out.append(cells)
-    table = Table(out, colWidths=col_widths, repeatRows=1)
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), _NAVY),
-        ("BOX", (0, 0), (-1, -1), 0.5, _BLUE),
-        ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [_WHITE, _LGREY]),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 1),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
-    ]))
-    return table
-
-
-def _paragraphs(text: str, style) -> list:
-    """One Paragraph per non-empty line of *text*."""
-    return [Paragraph(_esc(line.strip()), style) for line in (text or "").split("\n") if line.strip()]
 
 
 def build_report(drug_name: str, patents: pd.DataFrame, country: pd.DataFrame, output_path: str) -> str:
@@ -328,7 +284,7 @@ def build_report(drug_name: str, patents: pd.DataFrame, country: pd.DataFrame, o
     coverage = float(country.loc[country["patent_count"] > 0, "country_weight"].sum()) if not country.empty else 0.0
 
     story: list = [
-        Paragraph(_esc(title), st["title"]),
+        Paragraph(ru.esc(title), st["title"]),
         Paragraph(f"Generated {datetime.now().strftime('%B %d, %Y')}&nbsp;&nbsp;•&nbsp;&nbsp;"
                   f"{stats['total_patents']} Blocking Patents&nbsp;&nbsp;•&nbsp;&nbsp;"
                   f"{len(country)} Jurisdiction(s)", st["meta"]),
@@ -336,7 +292,7 @@ def build_report(drug_name: str, patents: pd.DataFrame, country: pd.DataFrame, o
     ]
 
     # Executive Summary
-    story += [Paragraph("Executive Summary", st["h1"]), *_paragraphs(narrative["executive_summary"], st["body"])]
+    story += [Paragraph("Executive Summary", st["h1"]), *ru.paragraphs(narrative["executive_summary"], st["body"])]
 
     # Portfolio Overview
     sf_avgs = " · ".join(f"SF{i} {stats['sf_averages'][sf]}" for i, sf in enumerate(ACTIVE_SFS, 1)
@@ -357,16 +313,16 @@ def build_report(drug_name: str, patents: pd.DataFrame, country: pd.DataFrame, o
 
     # Key Findings
     story.append(Paragraph("Key Findings", st["h1"]))
-    story += [Paragraph(f"&bull; {_esc(f)}", st["bullet"]) for f in narrative["key_findings"]]
+    story += [Paragraph(f"&bull; {ru.esc(f)}", st["bullet"]) for f in narrative["key_findings"]]
 
     # Patent Score Summary (highest weighted score first; capped so the report stays short)
     shown = stats["patents"][:MAX_PATENT_ROWS]
     story.append(Paragraph("Patent Score Summary", st["h1"]))
     summary_rows = [[p["patent_number"], p["jurisdiction"], p["patent_type"], p["sf1"], p["sf2"], p["sf3"], p["sf4"], p["weighted"]]
                     for p in shown]
-    story.append(_data_table(["Patent No.", "Jur", "Type", "SF1", "SF2", "SF3", "SF4", "Weighted"], summary_rows,
+    story.append(ru.data_table(["Patent No.", "Jur", "Type", "SF1", "SF2", "SF3", "SF4", "Weighted"], summary_rows,
                              [width * w for w in (0.22, 0.08, 0.22, 0.09, 0.09, 0.09, 0.09, 0.12)], st,
-                             score_cols=(3, 4, 5, 6, 7), left_cols=(0,)))
+                             score_cols=(3, 4, 5, 6, 7), left_cols=(0,), score_colors=_SCORE_CLR, padding=1))
     if len(stats["patents"]) > len(shown):
         story.append(Paragraph(f"Showing the {len(shown)} highest-scoring of {len(stats['patents'])} patents "
                                "(all are in the patent strength table).", st["legend"]))
@@ -376,33 +332,33 @@ def build_report(drug_name: str, patents: pd.DataFrame, country: pd.DataFrame, o
         story.append(Paragraph("Country-Weighted Patent Scores", st["h1"]))
         country_rows = [[r["jurisdiction"], r["country_name"], r["country_weight"], r["patent_count"],
                          _num(r["avg_weighted_score"]), _num(r["country_weighted_score"], 4)] for _, r in country.iterrows()]
-        story += [_data_table(["Jurisdiction", "Country", "Weight", "# Patents", "Avg Weighted Score", "Country Weighted Score"],
-                              country_rows, [width * w for w in (0.12, 0.22, 0.10, 0.10, 0.20, 0.26)], st, score_cols=(4,)),
+        story += [ru.data_table(["Jurisdiction", "Country", "Weight", "# Patents", "Avg Weighted Score", "Country Weighted Score"],
+                              country_rows, [width * w for w in (0.12, 0.22, 0.10, 0.10, 0.20, 0.26)], st, score_cols=(4,), score_colors=_SCORE_CLR, padding=1),
                   Spacer(1, 3),
-                  *_paragraphs(narrative["country_score_narrative"], st["body"])]
+                  *ru.paragraphs(narrative["country_score_narrative"], st["body"])]
 
     # Highest-risk patent
     highest = stats["highest"]
     if highest:
         story += [Paragraph("Highest-Risk Patent", st["h1"]),
-                  Paragraph(f"<b>{_esc(highest['patent_number'])}</b> ({_esc(highest['jurisdiction'])}, {_esc(highest['patent_type'])}) — "
-                            f"weighted score {highest['weighted']} / 5.0, {SCORE_LABEL[_band(highest['weighted'])]} "
+                  Paragraph(f"<b>{ru.esc(highest['patent_number'])}</b> ({ru.esc(highest['jurisdiction'])}, {ru.esc(highest['patent_type'])}) — "
+                            f"weighted score {highest['weighted']} / 5.0, {SCORE_LABEL[ru.band(highest['weighted'])]} "
                             f"(SF1 {highest['sf1']}, SF2 {highest['sf2']}, SF3 {highest['sf3']}, SF4 {highest['sf4']})", st["body"]),
-                  *_paragraphs(narrative["highest_score_narrative"], st["body"])]
+                  *ru.paragraphs(narrative["highest_score_narrative"], st["body"])]
 
     # Sub-Factor Analysis
-    story += [Paragraph("Sub-Factor Analysis", st["h1"]), *_paragraphs(narrative["sf_analysis"], st["body"])]
+    story += [Paragraph("Sub-Factor Analysis", st["h1"]), *ru.paragraphs(narrative["sf_analysis"], st["body"])]
 
     # Risk & Strength
     story += [Paragraph("Risk &amp; Strength Analysis", st["h1"]),
               Paragraph('<font color="#CC0000"><b>Highest Risk Patents</b></font>', st["h2"]),
-              *_paragraphs(narrative["risk_highlights"], st["body"]),
+              *ru.paragraphs(narrative["risk_highlights"], st["body"]),
               Paragraph('<font color="#008000"><b>Most Robust Patents</b></font>', st["h2"]),
-              *_paragraphs(narrative["strength_highlights"], st["body"])]
+              *ru.paragraphs(narrative["strength_highlights"], st["body"])]
 
     # Drug-Level Analysis = the stored rationale
-    story += [Paragraph(f"Drug-Level Analysis — {_esc(drug_name)}", st["h1"]),
-              *_paragraphs(rationale or "No rationale provided.", st["body"])]
+    story += [Paragraph(f"Drug-Level Analysis — {ru.esc(drug_name)}", st["h1"]),
+              *ru.paragraphs(rationale or "No rationale provided.", st["body"])]
 
     # Framework + legend, in two lines
     story += [Spacer(1, 4),
@@ -433,7 +389,7 @@ def generate_report(drug_name: str, output_dir: Path, upload: bool = True) -> di
 
     gcs_uri = archive_uri = None
     if upload:
-        gcs_uri, archive_uri = upload_report(
+        gcs_uri, archive_uri = ru.upload_report(
             drug_name, Path(local_path).read_bytes(), datetime.now().strftime("%Y%m%d_%H%M%S"),
             report_name=config.DIMENSION_PATENT_STRENGTH,
         )

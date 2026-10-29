@@ -18,10 +18,8 @@ It is uploaded next to the other IP reports, to gs://{REPORT_GCS_BUCKET}/{REPORT
 
 import logging
 import re
-import tempfile
 from collections import defaultdict
 from datetime import datetime
-from pathlib import Path
 from typing import Dict, List
 
 import pandas as pd
@@ -32,9 +30,8 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from .. import config
+from .. import config, report_utils as ru
 from ..gemini_utils import gemini_api_call
-from ..primary_market_entry_horizon.generate_report_and_rationale.generate_report import upload_report
 
 logger = logging.getLogger(__name__)
 
@@ -285,7 +282,7 @@ def _paragraphs(text: str, style) -> List[Paragraph]:
     for para in (text or "").split("\n\n"):
         para = " ".join(para.split())
         if para:
-            out.append(Paragraph(_PATENT_NUMBER.sub(r"<b>\1</b>", para.replace("&", "&amp;").replace("<", "&lt;")), style))
+            out.append(Paragraph(_PATENT_NUMBER.sub(r"<b>\1</b>", ru.esc(para)), style))
     return out
 
 
@@ -347,11 +344,4 @@ def report_for_drug(drug_name: str, patents: List[Dict]) -> dict:
     analysed = analysed_patents(patents)
     if not analysed:
         raise ValueError(f"No blocking / non-blocking patents to report for {drug_name!r}")
-    with tempfile.TemporaryDirectory() as tmp:
-        local_path = build_report(drug_name, analysed, str(Path(tmp) / "report.pdf"))
-        gcs_uri, archive_uri = upload_report(
-            drug_name, Path(local_path).read_bytes(), datetime.now().strftime("%Y%m%d_%H%M%S"),
-            report_name=config.DIMENSION_BLOCKING_ANALYSIS,
-        )
-    logger.info("[REPORT] %s: uploaded: %s | archive: %s", drug_name, gcs_uri, archive_uri)
-    return {"drug_name": drug_name, "gcs_uri": gcs_uri, "archive_uri": archive_uri}
+    return ru.publish_report(drug_name, config.DIMENSION_BLOCKING_ANALYSIS, lambda path: build_report(drug_name, analysed, path))

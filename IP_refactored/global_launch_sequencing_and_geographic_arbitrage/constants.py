@@ -32,6 +32,12 @@ FINAL_COLUMNS = [
 # Concurrent Gemini lookups (approval dates, PTE).
 LOOKUP_CONCURRENCY = 4
 
+# Plain jurisdiction names shown in the reports.
+JURISDICTION_NAMES = {
+    "CN": "China", "IN": "India", "BR": "Brazil", "AU": "Australia", "RU": "Russia", "US": "United States",
+    "JP": "Japan", "KR": "South Korea", "TW": "Taiwan", "CA": "Canada", "MX": "Mexico",
+}
+
 # ── Regulatory / PTE rules ───────────────────────────────────────────────────
 JURISDICTION_FULL = {
     "CN": "China (NMPA / formerly CFDA)",

@@ -57,7 +57,7 @@ def _generate_reports(drug: str, shortlisted, arbitrage, rationale: str) -> dict
     from .generate_report_and_rationale.generate_report import generate_dim4_report, generate_pte_report
 
     builds = {
-        "report": (config.DIMENSION_GLOBAL_LAUNCH, lambda: generate_dim4_report.report_for_drug(drug, arbitrage, rationale)),
+        "report": (config.DIMENSION_GLOBAL_LAUNCH, lambda: generate_dim4_report.report_for_drug(drug, shortlisted, arbitrage, rationale)),
         "pte_report": (config.DIMENSION_PTE_ANALYSIS, lambda: generate_pte_report.report_for_drug(drug, shortlisted, arbitrage)),
     }
     reports = {}

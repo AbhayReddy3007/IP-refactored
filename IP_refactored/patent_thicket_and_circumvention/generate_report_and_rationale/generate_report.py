@@ -19,7 +19,6 @@ gs://{REPORT_GCS_BUCKET}/{REPORT_GCS_PATH}/:
 """
 
 import logging
-import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -27,7 +26,6 @@ from reportlab.platypus import HRFlowable, Paragraph, Spacer
 
 from ... import config, report_utils as ru
 from ...gemini_utils import gemini_json_call
-from ...primary_market_entry_horizon.generate_report_and_rationale.generate_report import upload_report
 from ..scoring.scoring import THICKET_SCORE_LABELS, patent_count_label
 from .generate_rationale import data_block
 
@@ -152,11 +150,5 @@ def build_report(drug_name: str, drug_score: dict, circumvention: dict, rational
 def report_for_drug(drug_name: str, drug_score: dict, circumvention: dict, rationale: str) -> dict:
     """Build the report in a temporary directory and upload it. Called at the end of every
     patent_thicket_and_circumvention run. Returns {"drug_name", "gcs_uri", "archive_uri"}."""
-    with tempfile.TemporaryDirectory() as tmp:
-        local_path = build_report(drug_name, drug_score, circumvention, rationale, str(Path(tmp) / "report.pdf"))
-        gcs_uri, archive_uri = upload_report(
-            drug_name, Path(local_path).read_bytes(), datetime.now().strftime("%Y%m%d_%H%M%S"),
-            report_name=config.DIMENSION_PATENT_THICKET,
-        )
-    logger.info("[REPORT] %s: uploaded: %s | archive: %s", drug_name, gcs_uri, archive_uri)
-    return {"drug_name": drug_name, "gcs_uri": gcs_uri, "archive_uri": archive_uri}
+    return ru.publish_report(drug_name, config.DIMENSION_PATENT_THICKET,
+                             lambda path: build_report(drug_name, drug_score, circumvention, rationale, path))

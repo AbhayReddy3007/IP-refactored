@@ -24,7 +24,7 @@ import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 from xml.sax.saxutils import escape
 
 import pandas as pd
@@ -38,7 +38,7 @@ from reportlab.platypus import (
 )
 
 from ... import config
-from ... import gcp_helpers
+from ...report_utils import upload_report
 from ...gemini_utils import gemini_api_call
 from ...utils import is_blank, normalize_drug_str, safe_name, setup_logging
 from ...bq_utils import load_master_table
@@ -430,25 +430,6 @@ def _stored_rationale(drug_df: pd.DataFrame) -> Optional[str]:
 # ─────────────────────────────────────────────
 # Per-drug run
 # ─────────────────────────────────────────────
-
-def report_gcs_paths(drug_name: str, run_ts: str, report_name: Optional[str] = None) -> Tuple[str, str]:
-    """(current, archived) object paths in config.REPORT_GCS_BUCKET. The report is
-    named after its dimension: *report_name*, default
-    config.DIMENSION_PRIMARY_MARKET_ENTRY_HORIZON."""
-    ip_folder = f"{config.REPORT_GCS_PATH}/{safe_name(drug_name)}/{config.GCS_IP_SUBFOLDER}"
-    name = report_name or config.DIMENSION_PRIMARY_MARKET_ENTRY_HORIZON
-    return f"{ip_folder}/{name}.pdf", f"{ip_folder}/archive/{name}+{run_ts}.pdf"
-
-
-def upload_report(drug_name: str, pdf_bytes: bytes, run_ts: str, report_name: Optional[str] = None) -> Tuple[str, str]:
-    """Upload the PDF as the current report and as a timestamped archive copy.
-    Returns (current_uri, archive_uri)."""
-    current_path, archive_path = report_gcs_paths(drug_name, run_ts, report_name)
-    return tuple(
-        gcp_helpers.upload_blob(path, pdf_bytes, content_type="application/pdf", bucket=config.REPORT_GCS_BUCKET)
-        for path in (current_path, archive_path)
-    )
-
 
 def generate_report(drug_name: str, drug_df: pd.DataFrame, output_dir: Path, upload: bool = True) -> Dict:
     """Build (and optionally upload) the report for one drug's glp_master_loe rows.
