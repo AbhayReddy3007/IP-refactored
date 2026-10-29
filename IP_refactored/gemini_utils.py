@@ -8,6 +8,7 @@ same retry / flex->standard fallback and is counted in the per-run usage stats
     gemini_generate(contents, model, ...)        -> GenerateContentResponse   (sync)
     gemini_generate_async(contents, model, ...)  -> GenerateContentResponse   (for async code)
     gemini_api_call(prompt, model, ...)          -> str                       (text in, text out; optional PDFs)
+    gemini_json_call(prompt, model, ...)         -> dict                      (JSON object in, JSON object out)
     gemini_embed(texts, model, ...)              -> list of embedding vectors
     gemini_embed_async(texts, model, ...)
 """
@@ -15,6 +16,7 @@ same retry / flex->standard fallback and is counted in the per-run usage stats
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
 import time
@@ -288,6 +290,12 @@ def gemini_api_call(
         thinking_level=thinking_level,
     )
     return response.text or ""
+
+
+def gemini_json_call(prompt: str, model: str, **kwargs) -> dict:
+    """gemini_api_call() for a prompt whose reply is one JSON object; returns it parsed.
+    Raises json.JSONDecodeError if the reply is not valid JSON."""
+    return json.loads(gemini_api_call(prompt, model, response_mime_type="application/json", **kwargs))
 
 
 def gemini_embed(texts: list[str], model: str, task_type: str | None = None) -> list[list[float]]:

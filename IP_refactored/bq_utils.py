@@ -10,6 +10,7 @@ Reads:
 
 Writes:
     replace_drug_rows(df, ...)        delete a drug's rows from a table, then append — re-runs replace, not duplicate
+    write_drug_rows(rows, ...)        the same for dict rows, typed to the table's existing schema (table_schema, coerce_to_schema)
     now_iso()                         the format of every updated_at column
 
 Gemini usage (one row per model per drug run):
@@ -87,6 +88,50 @@ def replace_drug_rows(df: pd.DataFrame, table_id: str, schema: list, drug: str,
     )
     gcp_helpers.load_dataframe(df, table_id, schema)
     logger.info("%s: replaced %d old row(s) with %d row(s) for %r", table_id, deleted, len(df), drug)
+
+
+def table_schema(table_id: str, default: list) -> list:
+    """The table's existing schema plus any default column it lacks (just the default if it does not exist)."""
+    try:
+        existing = list(gcp_utils.get_bq_client().get_table(table_id).schema)
+    except Exception as exc:
+        logger.info("[BQ] %s not readable yet (%s) — using the default schema", table_id, type(exc).__name__)
+        return list(default)
+    known = {field.name for field in existing}
+    return existing + [field for field in default if field.name not in known]
+
+
+def coerce_to_schema(df: pd.DataFrame, schema: list) -> pd.DataFrame:
+    """Cast each column to its table type so the load job accepts it."""
+    df = df.copy()
+    for field in schema:
+        if field.name not in df.columns:
+            continue
+        kind = field.field_type
+        if kind == "STRING":
+            df[field.name] = df[field.name].map(
+                lambda v: None if v is None or (not isinstance(v, str) and pd.isna(v)) else str(v))
+        elif kind in ("INTEGER", "INT64"):
+            df[field.name] = pd.to_numeric(df[field.name], errors="coerce").round(0).astype("Int64")
+        elif kind in ("FLOAT", "FLOAT64", "NUMERIC"):
+            df[field.name] = pd.to_numeric(df[field.name], errors="coerce")
+        elif kind in ("TIMESTAMP", "DATETIME"):
+            # updated_at is an ISO string; a TIMESTAMP column needs real datetimes.
+            df[field.name] = pd.to_datetime(df[field.name], errors="coerce", utc=True)
+    return df
+
+
+def write_drug_rows(rows: list, table_id: str, default_schema: list, drug: str, drug_column: str = "drug_name") -> None:
+    """Replace *drug*'s rows in the table with *rows* (dicts), typed to the table's existing schema
+    (new columns of *default_schema* are added) and stamped with created_at."""
+    if not rows:
+        logger.info("[BQ] No rows to write to %s.", table_id)
+        return
+    df = pd.DataFrame(rows).drop_duplicates()
+    df["created_at"] = pd.Timestamp.now(tz="UTC")
+    schema = table_schema(table_id, default_schema)
+    df = coerce_to_schema(df, schema)
+    replace_drug_rows(df, table_id, [field for field in schema if field.name in df.columns], drug, drug_column=drug_column)
 
 
 # ─────────────────────────────────────────────

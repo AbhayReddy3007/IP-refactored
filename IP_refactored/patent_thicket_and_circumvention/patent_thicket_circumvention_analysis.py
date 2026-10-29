@@ -34,11 +34,12 @@ import time
 from .. import config
 from ..drug_list import resolve_drug_name
 from ..gemini_utils import reset_gemini_call_stats
+from ..master_loe import load_master_data
 from ..bq_utils import save_gemini_stats
 from .bq_utils import write_circumvention_to_bq, write_score_to_bq
 from .scoring.checkpoint import load_circumvention_cache, save_circumvention_cache
 from .scoring.circumvention import group_patents_by_category, run_circumvention_analysis
-from .retrieval.data_prep import get_claim_categories, load_master_data, select_non_blocking
+from .retrieval.data_prep import get_claim_categories, select_non_blocking
 from .scoring.scoring import score_drug
 from .generate_report_and_rationale.generate_rationale import rationale_for_drug
 

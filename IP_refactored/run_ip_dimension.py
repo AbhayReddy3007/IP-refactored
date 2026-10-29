@@ -9,6 +9,7 @@ through the IP dimensions selected by config.IP_DIMENSION (default: all):
     primary_market_entry_horizon()      patents -> blocking analysis -> scores -> glp_patent_loe / glp_master_loe
     patent_strength()                   glp_master_loe -> legal-robustness scores -> patent strength tables
     patent_thicket_and_circumvention()  glp_master_loe -> thicket score + design-around strategies -> its tables
+    global_launch_sequencing_and_geographic_arbitrage()  glp_master_loe -> expiry per jurisdiction, launch order, arbitrage score -> its tables
 
 Usage:
     python -m IP_refactored.run_ip_dimension --drug Semaglutide
@@ -28,6 +29,7 @@ from typing import List
 
 from . import config
 from .drug_list import list_glp1_patent_files
+from .global_launch_sequencing_and_geographic_arbitrage import global_launch_sequencing_and_geographic_arbitrage
 from .patent_strength import patent_strength
 from .patent_thicket_and_circumvention import patent_thicket_and_circumvention
 from .primary_market_entry_horizon import primary_market_entry_horizon
@@ -79,12 +81,14 @@ def get_target_drugs() -> List[str]:
 # Shard runner (Cloud Run Jobs / multi-drug)
 # ─────────────────────────────────────────────
 
-DIMENSIONS = ("all", "primary_market_entry_horizon", "patent_strength", "patent_thicket_and_circumvention")
+DIMENSIONS = ("all", "primary_market_entry_horizon", "patent_strength", "patent_thicket_and_circumvention",
+              "global_launch_sequencing_and_geographic_arbitrage")
 
 # The dimensions that read the glp_master_loe rows primary_market_entry_horizon writes, in run order.
 _READERS = (
     ("patent_strength", patent_strength),
     ("patent_thicket_and_circumvention", patent_thicket_and_circumvention),
+    ("global_launch_sequencing_and_geographic_arbitrage", global_launch_sequencing_and_geographic_arbitrage),
 )
 
 
@@ -98,7 +102,7 @@ def get_dimension() -> str:
 
 async def run_drug(drug_name: str, reindex: bool = False) -> dict:
     """Run the dimension(s) selected by config.IP_DIMENSION for one drug.
-    patent_strength and patent_thicket_and_circumvention read the glp_master_loe rows
+    patent_strength, patent_thicket_and_circumvention and global_launch_sequencing_and_geographic_arbitrage read the glp_master_loe rows
     primary_market_entry_horizon writes, so with "all" they run after it and are skipped
     when the horizon run fails. A failure in one of them does not stop the other."""
     dimension = get_dimension()

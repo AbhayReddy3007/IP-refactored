@@ -16,11 +16,10 @@ All BigQuery access goes through IP_refactored.gcp_helpers / gcp_utils; table ID
 
 import logging
 
-import pandas as pd
 from google.cloud import bigquery
 
-from .. import config, gcp_utils
-from ..bq_utils import now_iso, replace_drug_rows
+from .. import config
+from ..bq_utils import now_iso, write_drug_rows
 from .scoring.scoring import THICKET_SCORE_LABELS
 
 logger = logging.getLogger(__name__)
@@ -53,52 +52,8 @@ SCORE_SCHEMA = [
 
 
 # ─────────────────────────────────────────────
-# Write helpers
+# Row builders
 # ─────────────────────────────────────────────
-
-def _table_schema(table_id: str, default: list) -> list:
-    """The table's existing schema plus any default column it lacks (just the default if it does not exist)."""
-    try:
-        existing = list(gcp_utils.get_bq_client().get_table(table_id).schema)
-    except Exception as exc:
-        logger.info("[BQ] %s not readable yet (%s) — using the default schema", table_id, type(exc).__name__)
-        return list(default)
-    known = {field.name for field in existing}
-    return existing + [field for field in default if field.name not in known]
-
-
-def _coerce(df: pd.DataFrame, schema: list) -> pd.DataFrame:
-    """Cast each column to its table type so the load job accepts it."""
-    df = df.copy()
-    for field in schema:
-        if field.name not in df.columns:
-            continue
-        kind = field.field_type
-        if kind == "STRING":
-            df[field.name] = df[field.name].map(
-                lambda v: None if v is None or (not isinstance(v, str) and pd.isna(v)) else str(v))
-        elif kind in ("INTEGER", "INT64"):
-            df[field.name] = pd.to_numeric(df[field.name], errors="coerce").round(0).astype("Int64")
-        elif kind in ("FLOAT", "FLOAT64", "NUMERIC"):
-            df[field.name] = pd.to_numeric(df[field.name], errors="coerce")
-        elif kind in ("TIMESTAMP", "DATETIME"):
-            # updated_at is an ISO string; a TIMESTAMP column needs real datetimes.
-            df[field.name] = pd.to_datetime(df[field.name], errors="coerce", utc=True)
-    return df
-
-
-def _write_rows(rows: list, table_id: str, default_schema: list, drug: str) -> None:
-    """Replace *drug*'s rows in the table with *rows*, typed to the table's schema."""
-    if not rows:
-        logger.info("[BQ] No rows to write to %s.", table_id)
-        return
-    df = pd.DataFrame(rows).drop_duplicates()
-    df["created_at"] = pd.Timestamp.now(tz="UTC")
-    schema = _table_schema(table_id, default_schema)
-    df = _coerce(df, schema)
-
-    replace_drug_rows(df, table_id, [field for field in schema if field.name in df.columns], drug, drug_column="Drug_Name")
-
 
 def _join(values) -> str:
     return "; ".join(str(v) for v in values or [])
@@ -148,7 +103,7 @@ def build_circumvention_rows(drug: str, circ_data: dict, updated_at: str) -> lis
 def write_circumvention_to_bq(drug: str, circ_data: dict) -> None:
     """Replace the drug's rows in config.BQ_CIRCUMVENTION_TABLE with the new analysis."""
     rows = build_circumvention_rows(drug, circ_data, now_iso())
-    _write_rows(rows, config.BQ_CIRCUMVENTION_TABLE, CIRCUMVENTION_SCHEMA, drug)
+    write_drug_rows(rows, config.BQ_CIRCUMVENTION_TABLE, CIRCUMVENTION_SCHEMA, drug, drug_column="Drug_Name")
 
 
 # ─────────────────────────────────────────────
@@ -196,4 +151,4 @@ def build_score_rows(drug_score: dict, updated_at: str, rationale: str = "") -> 
 def write_score_to_bq(drug_score: dict, rationale: str = "") -> None:
     """Replace the drug's rows in config.BQ_THICKET_SCORE_TABLE with the new scores."""
     rows = build_score_rows(drug_score, now_iso(), rationale)
-    _write_rows(rows, config.BQ_THICKET_SCORE_TABLE, SCORE_SCHEMA, drug_score["drug"])
+    write_drug_rows(rows, config.BQ_THICKET_SCORE_TABLE, SCORE_SCHEMA, drug_score["drug"], drug_column="Drug_Name")

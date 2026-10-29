@@ -103,6 +103,7 @@ DIMENSION_PRIMARY_MARKET_ENTRY_HORIZON = os.getenv("DIMENSION_PRIMARY_MARKET_ENT
 DIMENSION_BLOCKING_ANALYSIS             = os.getenv("DIMENSION_BLOCKING_ANALYSIS", "Blocking Analysis")
 DIMENSION_PATENT_STRENGTH              = os.getenv("DIMENSION_PATENT_STRENGTH", "Patent Strength and Invalidity Opportunity")
 DIMENSION_PATENT_THICKET               = os.getenv("DIMENSION_PATENT_THICKET", "Patent Thicket and Circumvention Feasibility")
+DIMENSION_GLOBAL_LAUNCH                = os.getenv("DIMENSION_GLOBAL_LAUNCH", "Global Launch Sequencing and Geographic Arbitrage")
 
 # PDFs are sent inline to Gemini (Vertex has no Files API), so this caps the PDF size.
 GEMINI_FILE_SIZE_LIMIT_MB = int(os.getenv("GEMINI_FILE_SIZE_LIMIT_MB", "50"))
@@ -244,11 +245,12 @@ FDA_API_APPROVAL_SEARCH_LIMIT = int(os.getenv("FDA_API_APPROVAL_SEARCH_LIMIT", "
 GCS_JSON_EXPORT = os.getenv("GCS_JSON_EXPORT", "loe_json_exports")
 
 # Which IP dimension(s) run_ip_dimension runs:
-#   all (default)                    — all three, in the order below
+#   all                              — all four, in the order below
 #   primary_market_entry_horizon     — only that dimension
 #   patent_strength                  — only that dimension (needs the drug's glp_master_loe rows)
 #   patent_thicket_and_circumvention — only that dimension (needs the drug's glp_master_loe rows)
-IP_DIMENSION = os.getenv("IP_DIMENSION", "primary_market_entry_horizon").strip().lower()
+#   global_launch_sequencing_and_geographic_arbitrage — only that dimension (needs the drug's glp_master_loe rows)
+IP_DIMENSION = os.getenv("IP_DIMENSION", "global_launch_sequencing_and_geographic_arbitrage").strip().lower()
 
 # Rationale of a drug that has no patents for a dimension to assess (patent_strength, patent_thicket_and_circumvention).
 NO_QUALIFYING_PATENTS_RATIONALE = (
@@ -383,6 +385,10 @@ BQ_COUNTRY_SCORE_TABLE   = os.getenv("BQ_COUNTRY_SCORE_TABLE", "cognito-prod-394
 #   Patent_Thicket_Score_Table  — thicket score, one row per jurisdiction plus an average row per drug.
 BQ_CIRCUMVENTION_TABLE  = os.getenv("BQ_CIRCUMVENTION_TABLE", "cognito-prod-394707.cognito_prod_datamart.Circumvention_Table")
 BQ_THICKET_SCORE_TABLE  = os.getenv("BQ_THICKET_SCORE_TABLE", "cognito-prod-394707.cognito_prod_datamart.Patent_Thicket_Score_Table")
+
+# Global launch sequencing and geographic arbitrage: per-patent expiries and per-jurisdiction arbitrage.
+BQ_LAUNCH_PATENTS_TABLE = os.getenv("BQ_LAUNCH_PATENTS_TABLE", "cognito-prod-394707.cognito_prod_datamart.shortlisted_secondary_patents_table")
+BQ_ARBITRAGE_TABLE      = os.getenv("BQ_ARBITRAGE_TABLE", "cognito-prod-394707.cognito_prod_datamart.arbitrage_summary_table")
 
 # Per-run Gemini usage (one row per model per drug).
 GEMINI_STATS_TABLE = os.getenv("GEMINI_STATS_TABLE", f"{PROJECT_ID}.{BQ_DATASET_ID}.gemini_stats")
