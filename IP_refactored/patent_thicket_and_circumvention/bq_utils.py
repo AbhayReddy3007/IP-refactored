@@ -1,10 +1,8 @@
 """
 bq_utils.py
 ───────────
-Every BigQuery task of the patent thicket / circumvention dimension, in one place.
-
-Reads:
-    load_master_loe(drug)             the drug's rows from glp_master_loe        (config.BQ_MASTER_LOE_TABLE)
+The BigQuery writes of the patent thicket / circumvention dimension (the glp_master_loe read and the
+replace-a-drug's-rows step are shared: IP_refactored/bq_utils.py).
 
 Writes (each run replaces only that drug's rows, so re-runs never duplicate):
     write_circumvention_to_bq(...)    design-around strategies, one row per strategy per claim category
@@ -17,19 +15,15 @@ All BigQuery access goes through IP_refactored.gcp_helpers / gcp_utils; table ID
 """
 
 import logging
-from datetime import datetime, timezone
 
 import pandas as pd
 from google.cloud import bigquery
 
-from .. import config, gcp_helpers, gcp_utils
-from ..primary_market_entry_horizon.bq_utils import load_master_table
-from ..utils import bq_safe_name
+from .. import config, gcp_utils
+from ..bq_utils import now_iso, replace_drug_rows
 from .scoring.scoring import THICKET_SCORE_LABELS
 
 logger = logging.getLogger(__name__)
-
-_DRUG_MATCH = "REGEXP_REPLACE(LOWER(Drug_Name), r'\\s+', '') = REGEXP_REPLACE(LOWER(@drug_name), r'\\s+', '')"
 
 
 # ─────────────────────────────────────────────
@@ -56,17 +50,6 @@ SCORE_SCHEMA = [
     *[bigquery.SchemaField(name, "FLOAT64") for name in ("Adjusted_Count", "Validation_Pct", "Final_Score")],
     bigquery.SchemaField("created_at", "TIMESTAMP"),
 ]
-
-
-# ─────────────────────────────────────────────
-# Read — glp_master_loe
-# ─────────────────────────────────────────────
-
-def load_master_loe(drug: str) -> pd.DataFrame:
-    """The drug's rows from glp_master_loe, with the friendly column names the analysis
-    uses ('Drug Name', 'Patent Number', 'Source File', ...)."""
-    df = load_master_table([drug])
-    return df.rename(columns={bq_safe_name("Source File"): "Source File"})
 
 
 # ─────────────────────────────────────────────
@@ -101,8 +84,8 @@ def _coerce(df: pd.DataFrame, schema: list) -> pd.DataFrame:
     return df
 
 
-def _replace_drug_rows(rows: list, table_id: str, default_schema: list, drug: str) -> None:
-    """Delete *drug*'s rows from the table, then append *rows*."""
+def _write_rows(rows: list, table_id: str, default_schema: list, drug: str) -> None:
+    """Replace *drug*'s rows in the table with *rows*, typed to the table's schema."""
     if not rows:
         logger.info("[BQ] No rows to write to %s.", table_id)
         return
@@ -111,14 +94,7 @@ def _replace_drug_rows(rows: list, table_id: str, default_schema: list, drug: st
     schema = _table_schema(table_id, default_schema)
     df = _coerce(df, schema)
 
-    deleted = gcp_helpers.delete_rows(table_id, _DRUG_MATCH, {"drug_name": drug})
-    gcp_helpers.load_dataframe(df, table_id, [field for field in schema if field.name in df.columns])
-    logger.info("[BQ] %s: replaced %d old row(s) with %d row(s) for %r", table_id, deleted, len(df), drug)
-
-
-def _now_iso() -> str:
-    """ISO 8601, microseconds, UTC — the format of every updated_at column."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    replace_drug_rows(df, table_id, [field for field in schema if field.name in df.columns], drug, drug_column="Drug_Name")
 
 
 def _join(values) -> str:
@@ -168,8 +144,8 @@ def build_circumvention_rows(drug: str, circ_data: dict, updated_at: str) -> lis
 
 def write_circumvention_to_bq(drug: str, circ_data: dict) -> None:
     """Replace the drug's rows in config.BQ_CIRCUMVENTION_TABLE with the new analysis."""
-    rows = build_circumvention_rows(drug, circ_data, _now_iso())
-    _replace_drug_rows(rows, config.BQ_CIRCUMVENTION_TABLE, CIRCUMVENTION_SCHEMA, drug)
+    rows = build_circumvention_rows(drug, circ_data, now_iso())
+    _write_rows(rows, config.BQ_CIRCUMVENTION_TABLE, CIRCUMVENTION_SCHEMA, drug)
 
 
 # ─────────────────────────────────────────────
@@ -214,5 +190,5 @@ def build_score_rows(drug_score: dict, updated_at: str) -> list:
 
 def write_score_to_bq(drug_score: dict) -> None:
     """Replace the drug's rows in config.BQ_THICKET_SCORE_TABLE with the new scores."""
-    rows = build_score_rows(drug_score, _now_iso())
-    _replace_drug_rows(rows, config.BQ_THICKET_SCORE_TABLE, SCORE_SCHEMA, drug_score["drug"])
+    rows = build_score_rows(drug_score, now_iso())
+    _write_rows(rows, config.BQ_THICKET_SCORE_TABLE, SCORE_SCHEMA, drug_score["drug"])

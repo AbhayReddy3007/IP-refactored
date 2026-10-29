@@ -3,7 +3,7 @@
 Every Gemini call in the pipeline goes through this module (Vertex AI, using
 Application Default Credentials and config.PROJECT_ID), so each one gets the
 same retry / flex->standard fallback and is counted in the per-run usage stats
-(get_gemini_call_stats -> primary_market_entry_horizon.bq_utils.append_gemini_stats_to_bigquery).
+(get_gemini_call_stats -> bq_utils.append_gemini_stats_to_bigquery).
 
     gemini_generate(contents, model, ...)        -> GenerateContentResponse   (sync)
     gemini_generate_async(contents, model, ...)  -> GenerateContentResponse   (for async code)

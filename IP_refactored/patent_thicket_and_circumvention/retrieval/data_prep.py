@@ -4,9 +4,9 @@ import logging
 
 import pandas as pd
 
+from ...bq_utils import load_master_loe
 from ...patent_filter import get_approved_patent_numbers
 from ...utils import normalize_patent_number
-from ..bq_utils import load_master_loe
 from ..scoring.constants import EXCLUDED_CATEGORIES
 
 logger = logging.getLogger(__name__)

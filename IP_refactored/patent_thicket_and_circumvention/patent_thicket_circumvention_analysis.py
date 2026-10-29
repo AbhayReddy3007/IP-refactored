@@ -30,7 +30,7 @@ import time
 from .. import config
 from ..drug_list import resolve_drug_name
 from ..gemini_utils import reset_gemini_call_stats
-from ..primary_market_entry_horizon.bq_utils import save_gemini_stats
+from ..bq_utils import save_gemini_stats
 from .bq_utils import write_circumvention_to_bq, write_score_to_bq
 from .scoring.checkpoint import load_circumvention_cache, save_circumvention_cache
 from .scoring.circumvention import group_patents_by_category, run_circumvention_analysis

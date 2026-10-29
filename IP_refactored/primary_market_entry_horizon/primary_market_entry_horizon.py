@@ -31,10 +31,11 @@ from typing import Dict, List, Optional
 from .. import config
 from ..blocking_analysis import run_blocking_analysis
 from ..drug_list import resolve_drug_name
+from ..bq_utils import save_gemini_stats
 from ..chunking.indexer import get_or_create_collection, indexer as run_indexer
 from ..gemini_utils import reset_gemini_call_stats
 from ..patent_filter import patent_filter
-from .bq_utils import publish_table, save_gemini_stats
+from .bq_utils import publish_table
 from .score_calculation import (
     assign_patent_phases,
     calculate_scores,

@@ -33,8 +33,8 @@ from typing import Optional
 from .. import config
 from ..drug_list import resolve_drug_name
 from ..gemini_utils import reset_gemini_call_stats
-from ..primary_market_entry_horizon.bq_utils import save_gemini_stats
-from .storage.bq_utils import build_output_bigquery, load_master_loe
+from ..bq_utils import load_master_loe, save_gemini_stats
+from .storage.bq_utils import build_output_bigquery
 from .scoring.constants import ACTIVE_SFS, SF_DISPLAY_NAMES, SF_SCORE_LABELS
 from .scoring.pipeline import load_score_cache, score_all_patents
 from .scoring.scoring import compute_country_wise_scores

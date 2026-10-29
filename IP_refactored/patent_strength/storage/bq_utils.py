@@ -1,11 +1,11 @@
 """
 bq_utils.py
 BigQuery I/O for the patent strength dimension:
-    load_master_loe(drug)            the drug's glp_master_loe rows       (config.BQ_MASTER_LOE_TABLE)
     load_existing_score_cache(drug)  fallback score cache                 (config.BQ_PATENT_STRENGTH_TABLE)
     build_output_bigquery(...)       patent_strength_table + country score table;
                                      each run replaces only that drug's rows
 
+Shared reads/writes (glp_master_loe, replace-a-drug's-rows) are in IP_refactored/bq_utils.py.
 All BigQuery access goes through IP_refactored.gcp_helpers / gcp_utils; table IDs come from IP_refactored.config.
 """
 
@@ -16,8 +16,7 @@ import pandas as pd
 from google.cloud import bigquery
 
 from ... import config, gcp_helpers
-from ...primary_market_entry_horizon.bq_utils import load_master_table
-from ...utils import bq_safe_name
+from ...bq_utils import now_iso, replace_drug_rows
 from .checkpoint import checkpoint_key
 from ..scoring.constants import ACTIVE_SFS, JURISDICTION_LABELS, SF_SCORE_LABELS
 from ..scoring.scoring import compute_weighted_score, get_country_weight, infer_jurisdiction, summary_fields
@@ -73,20 +72,6 @@ COUNTRY_SCORE_SCHEMA = [
 
 
 # ── Writers ───────────────────────────────────────────────────────────────────
-
-def _replace_drug_rows(rows: list[dict], table_id: str, schema: list, drug: str) -> None:
-    """Delete *drug*'s rows from the table, then append *rows* (re-runs replace, not duplicate)."""
-    if not rows:
-        logger.info("No rows to write to %s.", table_id)
-        return
-    deleted = gcp_helpers.delete_rows(
-        table_id,
-        "REGEXP_REPLACE(LOWER(drug_name), r'\\s+', '') = REGEXP_REPLACE(LOWER(@drug_name), r'\\s+', '')",
-        {"drug_name": drug},
-    )
-    gcp_helpers.load_dataframe(pd.DataFrame(rows).drop_duplicates(), table_id, schema)
-    logger.info("%s: replaced %d old row(s) with %d row(s) for %r", table_id, deleted, len(rows), drug)
-
 
 def _sf_fields(result: dict, sf_key: str) -> dict:
     """Flatten one sub-factor result into BigQuery column values."""
@@ -161,28 +146,21 @@ def build_output_bigquery(df_shortlist: pd.DataFrame, results: list[dict], count
                           rationale: str = "") -> None:
     """Write patent_strength_table and patent_strength_country_score_table for *drug*.
     ``updated_at`` is when the scores were calculated: ISO 8601, microseconds, UTC."""
-    updated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    updated_at = now_iso()
 
     logger.info("Writing %s ...", config.BQ_PATENT_STRENGTH_TABLE)
-    _replace_drug_rows(
-        _build_strength_rows(df_shortlist, results, drug, updated_at),
+    replace_drug_rows(
+        pd.DataFrame(_build_strength_rows(df_shortlist, results, drug, updated_at)).drop_duplicates(),
         config.BQ_PATENT_STRENGTH_TABLE, PATENT_STRENGTH_SCHEMA, drug,
     )
     logger.info("Writing %s ...", config.BQ_COUNTRY_SCORE_TABLE)
-    _replace_drug_rows(
-        _build_country_rows(country_scores, drug, updated_at, rationale),
+    replace_drug_rows(
+        pd.DataFrame(_build_country_rows(country_scores, drug, updated_at, rationale)).drop_duplicates(),
         config.BQ_COUNTRY_SCORE_TABLE, COUNTRY_SCORE_SCHEMA, drug,
     )
 
 
 # ── Readers ───────────────────────────────────────────────────────────────────
-
-def load_master_loe(drug: str) -> pd.DataFrame:
-    """The drug's rows from glp_master_loe, with the friendly column names the
-    pipeline uses ('Drug Name', 'Patent Number', 'Source File', ...)."""
-    df = load_master_table([drug])
-    return df.rename(columns={bq_safe_name("Source File"): "Source File"})
-
 
 def load_existing_score_cache(drug: str) -> dict:
     """

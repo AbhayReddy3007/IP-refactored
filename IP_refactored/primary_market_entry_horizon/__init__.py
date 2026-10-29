@@ -16,7 +16,7 @@ calculation (ported from cog/):
     score_calculation/       — patent_scores (calculate_scores), phase_fetcher (phase_at_filing),
                                approval_date_fetcher (real approval dates), scoring (master-table scoring),
                                merge_forecasted_loe (glp_patent_loe rows; merge with forecasted_loe -> glp_master_loe rows)
-    bq_utils.py              — every BigQuery read, and the LOE table writes (BigQuery + a JSON snapshot in GCS)
+    bq_utils.py              — its BigQuery reads, and the LOE table writes (BigQuery + a JSON snapshot in GCS)
     generate_report_and_rationale/ — the "Rationale" column of glp_master_loe + the PDF report built from it
 (the original callers — tools.py's two-pass orchestration, and agent.py,
 which has been removed — are superseded by primary_market_entry_horizon();

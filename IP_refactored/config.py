@@ -247,7 +247,7 @@ GCS_JSON_EXPORT = os.getenv("GCS_JSON_EXPORT", "loe_json_exports")
 #   primary_market_entry_horizon     — only that dimension
 #   patent_strength                  — only that dimension (needs the drug's glp_master_loe rows)
 #   patent_thicket_and_circumvention — only that dimension (needs the drug's glp_master_loe rows)
-IP_DIMENSION = os.getenv("IP_DIMENSION", "all").strip().lower()
+IP_DIMENSION = os.getenv("IP_DIMENSION", "patent_thicket_and_circumvention").strip().lower()
 
 # When True, forecasted_loe rows for Marketed/Pre-registration drugs are kept
 # (real LOE data does NOT supersede the forecast).

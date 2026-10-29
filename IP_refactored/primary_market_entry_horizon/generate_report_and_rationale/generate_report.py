@@ -41,7 +41,7 @@ from ... import config
 from ... import gcp_helpers
 from ...gemini_utils import gemini_api_call
 from ...utils import is_blank, normalize_drug_str, safe_name, setup_logging
-from ..bq_utils import load_master_table
+from ...bq_utils import load_master_table
 from .generate_rationale import (
     SCORE_LABELS, cell, clean_year, extract_drug_data, fmt_number, forecasted_label,
     is_forecasted, normalize_forecasted_col, to_number, us_ep_rows,

@@ -6,7 +6,7 @@ feasible it is to design around it (505(b)(2)). Reads glp_master_loe (the output
 primary_market_entry_horizon) and writes Circumvention_Table + Patent_Thicket_Score_Table.
 
     patent_thicket_circumvention_analysis.py   patent_thicket_and_circumvention(drug) — the whole pipeline for one drug
-    bq_utils.py          every BigQuery read / write
+    bq_utils.py          BigQuery writes specific to this dimension (shared ones: IP_refactored/bq_utils.py)
 
     retrieval/   what goes in
         data_prep.py        the drug's glp_master_loe rows, cleaned, approved patents only; its NON-BLOCKING patents
