@@ -256,7 +256,7 @@ GCS_JSON_EXPORT = os.getenv("GCS_JSON_EXPORT", "loe_json_exports")
 # (its input) and building glp_master_loe (which merges the new forecasted_loe rows). Set to false to skip it.
 RUN_FORECAST = os.getenv("RUN_FORECAST", "true").strip().lower() not in ("0", "false", "no", "off")
 
-IP_DIMENSION = os.getenv("IP_DIMENSION", "global_launch_sequencing_and_geographic_arbitrage").strip().lower()
+IP_DIMENSION = os.getenv("IP_DIMENSION", "primary_market_entry_horizon").strip().lower()
 
 # Rationale of a drug that has no patents for a dimension to assess (patent_strength, patent_thicket_and_circumvention).
 NO_QUALIFYING_PATENTS_RATIONALE = (
