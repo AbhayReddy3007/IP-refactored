@@ -106,6 +106,7 @@ DIMENSION_PATENT_THICKET               = os.getenv("DIMENSION_PATENT_THICKET", "
 DIMENSION_GLOBAL_LAUNCH                = os.getenv("DIMENSION_GLOBAL_LAUNCH", "Global Launch Sequencing & Arbitrage")
 DIMENSION_PTE_ANALYSIS                 = os.getenv("DIMENSION_PTE_ANALYSIS", "PTE Analysis")
 DIMENSION_FORECAST                     = os.getenv("DIMENSION_FORECAST", "Forecast Analysis")
+DIMENSION_LITIGATION                   = os.getenv("DIMENSION_LITIGATION", "Litigation Analysis")
 
 # PDFs are sent inline to Gemini (Vertex has no Files API), so this caps the PDF size.
 GEMINI_FILE_SIZE_LIMIT_MB = int(os.getenv("GEMINI_FILE_SIZE_LIMIT_MB", "50"))
@@ -246,16 +247,17 @@ FDA_API_APPROVAL_SEARCH_LIMIT = int(os.getenv("FDA_API_APPROVAL_SEARCH_LIMIT", "
 #   gs://{GCS_BUCKET}/{GCS_CACHE_PREFIX}/{GCS_JSON_EXPORT}/{table name}/{drug}_{YYYYMMDD_HHMMSS}.json
 GCS_JSON_EXPORT = os.getenv("GCS_JSON_EXPORT", "loe_json_exports")
 
-# Which IP dimension(s) run_ip_dimension runs:
-#   all                              — all four, in the order below
-#   primary_market_entry_horizon     — only that dimension
-#   patent_strength                  — only that dimension (needs the drug's glp_master_loe rows)
-#   patent_thicket_and_circumvention — only that dimension (needs the drug's glp_master_loe rows)
-#   global_launch_sequencing_and_geographic_arbitrage — only that dimension (needs the drug's glp_master_loe rows)
 # primary_market_entry_horizon() also runs forecast_analysis() for the drug, between publishing glp_patent_loe
 # (its input) and building glp_master_loe (which merges the new forecasted_loe rows). Set to false to skip it.
 RUN_FORECAST = os.getenv("RUN_FORECAST", "true").strip().lower() not in ("0", "false", "no", "off")
 
+# Which IP dimension(s) run_ip_dimension runs:
+#   all                              — all five, in the order below
+#   primary_market_entry_horizon     — only that dimension
+#   patent_strength                  — only that dimension (needs the drug's glp_master_loe rows)
+#   patent_thicket_and_circumvention — only that dimension (needs the drug's glp_master_loe rows)
+#   global_launch_sequencing_and_geographic_arbitrage — only that dimension (needs the drug's glp_master_loe rows)
+#   litigations                      — only that dimension (needs the drug's glp_master_loe rows)
 IP_DIMENSION = os.getenv("IP_DIMENSION", "primary_market_entry_horizon").strip().lower()
 
 # Rationale of a drug that has no patents for a dimension to assess (patent_strength, patent_thicket_and_circumvention).
@@ -409,6 +411,10 @@ DRUG_COMPANY_TABLE = os.getenv("DRUG_COMPANY_TABLE") or os.getenv("BQ_TABLE_NAME
 BQ_FORECAST_S3_TABLE      = os.getenv("BQ_FORECAST_S3_TABLE", "cognito-prod-394707.cognito_prod_datamart.forecast_s3")
 BQ_FILING_PATTERN_TABLE   = os.getenv("BQ_FILING_PATTERN_TABLE", "cognito-prod-394707.cognito_prod_datamart.filing_pattern_table")
 BQ_COMPANY_ANALYSIS_TABLE = os.getenv("BQ_COMPANY_ANALYSIS_TABLE", "cognito-prod-394707.cognito_prod_datamart.company_analysis_table")
+
+# litigations(): patent litigation and court cases found per patent, one row per case (a summary-only row for a
+# drug with none).
+BQ_LITIGATION_TABLE = os.getenv("BQ_LITIGATION_TABLE", "cognito-prod-394707.cognito_prod_datamart.litigation_analysis_table")
 
 # Per-run Gemini usage (one row per model per drug).
 GEMINI_STATS_TABLE = os.getenv("GEMINI_STATS_TABLE", f"{PROJECT_ID}.{BQ_DATASET_ID}.gemini_stats")

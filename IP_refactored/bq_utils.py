@@ -7,6 +7,7 @@ dimension's own bq_utils.py.
 Reads:
     load_master_table(drugs)          glp_master_loe rows, friendly column names   (config.BQ_MASTER_LOE_TABLE)
     load_master_loe(drug)             one drug's glp_master_loe rows, as the analyses use them
+    load_patent_loe(drug)             one drug's glp_patent_loe rows (the blocking-analysis patents), friendly column names
 
 Writes:
     replace_drug_rows(df, ...)        delete a drug's rows from a table, then append — re-runs replace, not duplicate
@@ -66,6 +67,32 @@ def load_master_loe(drug: str) -> pd.DataFrame:
 
 
 # ─────────────────────────────────────────────
+# Reads — glp_patent_loe
+# ─────────────────────────────────────────────
+
+# glp_patent_loe columns the analyses read, beyond config.FINAL_COLUMNS.
+_EXTRA_COLUMNS = (
+    "Source File", "Approval Date Source",
+    "Step 2 Matched Elements", "Step 3 Technical Barrier", "Step 3 Confidence", "Step 3 Evidence Type",
+    "Step 3 Evidence Summary", "Step 4 Blocking Indicator", "Step 5 Novelty Signal", "Step 5 Reason",
+)
+
+
+def load_patent_loe(drug: str) -> pd.DataFrame:
+    """The drug's rows from glp_patent_loe (the blocking-analysis patents, Type="Existing"), with the
+    friendly column names the forecast steps use ('Drug Name', 'Patent Number', 'Source File', ...)."""
+    sql = (f"SELECT * FROM `{config.BQ_PATENT_LOE_TABLE}` "
+           f"WHERE LOWER(TRIM({bq_safe_name('Drug Name')})) = @drug")
+    job_config = bigquery.QueryJobConfig(query_parameters=[bigquery.ScalarQueryParameter("drug", "STRING", drug.strip().lower())])
+    df = gcp_utils.get_bq_client().query(sql, job_config=job_config).to_dataframe()
+
+    friendly = {bq_safe_name(name): name for name in [n for n, _ in config.FINAL_COLUMNS] + list(_EXTRA_COLUMNS)}
+    df = df.rename(columns={c: friendly.get(c, c) for c in df.columns})
+    logger.info("[PATENT_LOE] Loaded %d row(s) for %r from %s", len(df), drug, config.BQ_PATENT_LOE_TABLE)
+    return df
+
+
+# ─────────────────────────────────────────────
 # Writes
 # ─────────────────────────────────────────────
 
@@ -118,6 +145,8 @@ def coerce_to_schema(df: pd.DataFrame, schema: list) -> pd.DataFrame:
         elif kind in ("TIMESTAMP", "DATETIME"):
             # updated_at is an ISO string; a TIMESTAMP column needs real datetimes.
             df[field.name] = pd.to_datetime(df[field.name], errors="coerce", utc=True)
+        elif kind == "DATE":
+            df[field.name] = pd.to_datetime(df[field.name], errors="coerce").dt.date
     return df
 
 

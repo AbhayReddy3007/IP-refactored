@@ -19,6 +19,7 @@ forecasted_loe, is merged into glp_master_loe by the next primary_market_entry_h
        score them (controlling expiry = lower filing year + 20, years to entry, 1-5 score)         (step6)
     4. forecast_s3, filing_pattern_table, company_analysis_table and forecasted_loe -> BigQuery;
        each run replaces only that drug's (or company's) rows                       (bq_utils)
+    5. PDF report built from the run's results, uploaded to GCS on every run   (generate_report)
 
 Input is glp_patent_loe, so run primary_market_entry_horizon for the drug first.
 
@@ -66,6 +67,21 @@ _COMPANY_SECTIONS = (
 # ─────────────────────────────────────────────
 # Text the forecast prompt reads
 # ─────────────────────────────────────────────
+
+def _generate_report(drug: str, scored: List[Dict], patents: pd.DataFrame) -> dict:
+    """Build and upload the dimension's report; {"error": ...} if it fails."""
+    # Imported here so reportlab is only needed when a report is built.
+    from .generate_report.generate_report import report_for_drug
+
+    logger.info("[FORECAST] Generating the %s report ...", config.DIMENSION_FORECAST)
+    try:
+        report = report_for_drug(drug, scored, patents)
+    except Exception as e:
+        logger.exception("[FORECAST] Report failed for %r", drug)
+        return {"error": str(e), "gcs_uri": None, "archive_uri": None}
+    logger.info("[FORECAST] Report -> %s", report["gcs_uri"])
+    return report
+
 
 def _innovator_text(drug: str, rows: List[Dict]) -> str:
     """The step 4 rows as the 'innovator filing behaviour' source of the forecast prompt."""
@@ -171,7 +187,7 @@ async def forecast_analysis(drug_name: str, reset: bool = False) -> dict:
 
     Returns:
         {"drug_name", "company", "patents", "forecast_s3_rows", "innovators", "forecasted_patents",
-         "processing_time_seconds", "output_tables": [...]}
+         "processing_time_seconds", "output_tables": [...], "report": {"gcs_uri", "archive_uri"} or {"error"}}
         or {"drug_name", "error", ...} if the drug has no glp_patent_loe rows or the forecast fails.
     """
     reset_gemini_call_stats()
@@ -218,6 +234,10 @@ async def _run(drug: str, reset: bool, t0: float) -> dict:
     # Step 4: BigQuery (forecast_s3, filing_pattern_table and company_analysis_table were written above)
     await asyncio.to_thread(write_forecasted_loe, drug, scored)
 
+    # Step 5: the dimension's PDF report, from this run's results. A failed report is recorded in the result
+    # but does not fail the run.
+    report = await asyncio.to_thread(_generate_report, drug, scored, loe_df)
+
     elapsed = time.time() - t0
     logger.info("[FORECAST] Done in %.1fs - %d forecasted entr(ies)", elapsed, len(scored))
     return {
@@ -230,4 +250,5 @@ async def _run(drug: str, reset: bool, t0: float) -> dict:
         "processing_time_seconds": round(elapsed, 1),
         "output_tables":           [config.BQ_FORECAST_S3_TABLE, config.BQ_FILING_PATTERN_TABLE,
                                     config.BQ_COMPANY_ANALYSIS_TABLE, config.FORECASTED_LOE_TABLE],
+        "report":                  report,
     }

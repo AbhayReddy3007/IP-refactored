@@ -228,18 +228,24 @@ def load_forecasted_loe(drug_name: str) -> pd.DataFrame:
 PREREG_JURISDICTIONS = ("US", "EP")   # "EU" is normalised to "EP"
 
 
-def is_marketed_or_prereg(drug_details_df: pd.DataFrame) -> bool:
-    """True if the drug is Marketed (any geography) or Pre-registration in the
-    US or EP/EU. Pre-registration elsewhere (e.g. China only) does not count."""
+def is_marketed(drug_details_df: pd.DataFrame) -> bool:
+    """True if the drug is Marketed in any geography."""
     if drug_details_df.empty:
         return False
     phase_col = drug_details_columns(drug_details_df)["phase"]
     if not phase_col:
         logger.warning("[MERGE] No development-stage column in drug details — treating as not marketed")
         return False
-    phases = drug_details_df[phase_col].map(norm_phase)
-    if phases.eq("approved/marketed").any():
+    return bool(drug_details_df[phase_col].map(norm_phase).eq("approved/marketed").any())
+
+
+def is_marketed_or_prereg(drug_details_df: pd.DataFrame) -> bool:
+    """True if the drug is Marketed (any geography) or Pre-registration in the
+    US or EP/EU. Pre-registration elsewhere (e.g. China only) does not count."""
+    if is_marketed(drug_details_df):
         return True
+    if drug_details_df.empty or not drug_details_columns(drug_details_df)["phase"]:
+        return False
     phases_by_jur = _phases_by_jurisdiction_vwd(drug_details_df)
     return any("Pre-registration" in phases_by_jur.get(jur, ()) for jur in PREREG_JURISDICTIONS)
 

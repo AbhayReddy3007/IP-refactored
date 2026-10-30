@@ -4,7 +4,7 @@ bq_utils.py
 BigQuery tasks specific to the forecast_analysis dimension (shared ones: IP_refactored/bq_utils.py).
 
 Reads:
-    load_patent_loe(drug)           one drug's glp_patent_loe rows, friendly column names     (config.BQ_PATENT_LOE_TABLE)
+    load_patent_loe(drug)           one drug's glp_patent_loe rows (shared: IP_refactored/bq_utils.py)
     load_filing_pattern(drug)       the drug's rows from filing_pattern_table, if an earlier run wrote them
     load_company_analysis(company)  the company's row from company_analysis_table, if an earlier run wrote it
 
@@ -23,36 +23,13 @@ import pandas as pd
 from google.cloud import bigquery
 
 from .. import config, gcp_utils
-from ..bq_utils import coerce_to_schema, replace_drug_rows, table_schema, write_drug_rows
-from ..utils import bq_safe_name
+from ..bq_utils import coerce_to_schema, load_patent_loe, replace_drug_rows, table_schema, write_drug_rows
 
 logger = logging.getLogger(__name__)
 
-# glp_patent_loe columns the forecast steps read, beyond config.FINAL_COLUMNS.
-_EXTRA_COLUMNS = (
-    "Source File", "Approval Date Source",
-    "Step 2 Matched Elements", "Step 3 Technical Barrier", "Step 3 Confidence", "Step 3 Evidence Type",
-    "Step 3 Evidence Summary", "Step 4 Blocking Indicator", "Step 5 Novelty Signal", "Step 5 Reason",
-)
-
-
 # ─────────────────────────────────────────────
-# Reads — glp_patent_loe
+# Reads — earlier runs of this dimension
 # ─────────────────────────────────────────────
-
-def load_patent_loe(drug: str) -> pd.DataFrame:
-    """The drug's rows from glp_patent_loe (the blocking-analysis patents, Type="Existing"), with the
-    friendly column names the forecast steps use ('Drug Name', 'Patent Number', 'Source File', ...)."""
-    sql = (f"SELECT * FROM `{config.BQ_PATENT_LOE_TABLE}` "
-           f"WHERE LOWER(TRIM({bq_safe_name('Drug Name')})) = @drug")
-    job_config = bigquery.QueryJobConfig(query_parameters=[bigquery.ScalarQueryParameter("drug", "STRING", drug.strip().lower())])
-    df = gcp_utils.get_bq_client().query(sql, job_config=job_config).to_dataframe()
-
-    friendly = {bq_safe_name(name): name for name in [n for n, _ in config.FINAL_COLUMNS] + list(_EXTRA_COLUMNS)}
-    df = df.rename(columns={c: friendly.get(c, c) for c in df.columns})
-    logger.info("[FORECAST] Loaded %d row(s) for %r from %s", len(df), drug, config.BQ_PATENT_LOE_TABLE)
-    return df
-
 
 def _normalised_rows(table_id: str, column: str, value: str) -> List[Dict]:
     """Rows of *table_id* whose *column* equals *value*, ignoring case and spaces; [] if the table is missing."""
@@ -92,15 +69,6 @@ def _default_schema(df: pd.DataFrame) -> List[bigquery.SchemaField]:
     return [bigquery.SchemaField(col, kind(df[col])) for col in df.columns]
 
 
-def _coerce_to_table(df: pd.DataFrame, schema: List[bigquery.SchemaField]) -> pd.DataFrame:
-    """bq_utils.coerce_to_schema, plus DATE columns (ISO strings -> dates), which it does not handle."""
-    df = coerce_to_schema(df, schema)
-    for field in schema:
-        if field.field_type == "DATE" and field.name in df.columns:
-            df[field.name] = pd.to_datetime(df[field.name], errors="coerce").dt.date
-    return df
-
-
 def write_forecast_s3(drug: str, forecast_s3: pd.DataFrame) -> None:
     """Replace the drug's rows in forecast_s3."""
     if forecast_s3.empty:
@@ -128,7 +96,7 @@ def write_company_analysis(company: str, row: Dict, schema: List[bigquery.Schema
     """Replace the company's row in company_analysis_table (company-level, shared by its drugs)."""
     df = pd.DataFrame([row])
     full_schema = table_schema(config.BQ_COMPANY_ANALYSIS_TABLE, schema)
-    df = _coerce_to_table(df, full_schema)
+    df = coerce_to_schema(df, full_schema)
     replace_drug_rows(df, config.BQ_COMPANY_ANALYSIS_TABLE, [f for f in full_schema if f.name in df.columns],
                       company, drug_column="company")
 

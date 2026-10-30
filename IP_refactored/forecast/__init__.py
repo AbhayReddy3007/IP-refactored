@@ -13,6 +13,9 @@ forecasted_loe, which the next primary_market_entry_horizon run merges into glp_
     step5.py   the company's business strategy and incentive to expand protection (SEC EDGAR + Gemini) -> company_analysis_table
     step6.py   the patent filing forecast per patent type and jurisdiction (Gemini) and its scoring -> forecasted_loe
 
+    generate_report/   written on every run
+        generate_report.py  the PDF report (Gemini text from the forecast and the existing patents), uploaded to GCS
+
 Each step file can still be run on its own with `python -m IP_refactored.forecast.stepN`.
 """
 
