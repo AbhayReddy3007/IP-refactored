@@ -152,6 +152,27 @@ def list_glp1_patent_files() -> Dict[str, List[Dict]]:
     return files_by_drug
 
 
+def list_glp1_drugs_with_patent_master_rows() -> List[str]:
+    """
+    Every GLP-1 drug (drug_list()) that has at least one patent in patent_master with
+    confidence above config.PATENT_CONFIDENCE_THRESHOLD, spelled as the drug list spells it, sorted.
+    One BigQuery query, no GCS listing: the discovery for dimensions that read patent_master only.
+    Names are matched on lower(molecule_name), as litigations.retrieval.get_patents does.
+
+    A failed patent_master query raises, so a transient error never looks like "no drugs".
+    """
+    drugs = drug_list()
+    if not drugs:
+        return []
+    query = (f"SELECT DISTINCT LOWER(TRIM(molecule_name)) AS molecule_name FROM `{config.PATENT_MASTER_TABLE}` "
+             f"WHERE confidence > {config.PATENT_CONFIDENCE_THRESHOLD} AND molecule_name IS NOT NULL")
+    with_patents = {str(row["molecule_name"]) for row in gcp_utils.get_bq_client().query(query).result()}
+    found = [drug for drug in drugs if drug.strip().lower() in with_patents]
+    logger.info("[DRUG_LIST] %d/%d GLP-1 drug(s) have patents in %s with confidence > %s: %s",
+                len(found), len(drugs), config.PATENT_MASTER_TABLE, config.PATENT_CONFIDENCE_THRESHOLD, found)
+    return found
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     result = list_glp1_patent_files()

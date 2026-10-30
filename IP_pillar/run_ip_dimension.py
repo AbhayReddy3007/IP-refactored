@@ -29,7 +29,7 @@ import time
 from typing import List
 
 from . import config
-from .drug_list import list_glp1_patent_files
+from .drug_list import list_glp1_drugs_with_patent_master_rows, list_glp1_patent_files
 from .global_launch_sequencing_and_geographic_arbitrage import global_launch_sequencing_and_geographic_arbitrage
 from .litigations import litigation_analysis
 from .patent_strength import patent_strength
@@ -45,7 +45,12 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────
 
 def list_glp1_drug_folders() -> List[str]:
-    """Every GLP-1 drug (BigQuery drug list) that has approved patent PDFs in GCS."""
+    """Every GLP-1 drug (BigQuery drug list) that has approved patent PDFs in GCS; for the litigations
+    dimension, which reads patent_master only, every GLP-1 drug with patents in patent_master."""
+    if config.IP_DIMENSION == "litigations":
+        drugs = sorted(list_glp1_drugs_with_patent_master_rows())
+        logger.info("[DISCOVERY] %d GLP-1 drug(s) with patent_master patents: %s", len(drugs), drugs)
+        return drugs
     if not config.GCS_BUCKET:
         logger.error("[DISCOVERY] GCS_BUCKET not set — cannot list patent files")
         return []
@@ -55,12 +60,13 @@ def list_glp1_drug_folders() -> List[str]:
 
 
 def get_my_shard(drugs: List[str]) -> List[str]:
-    """This Cloud Run task's share of *drugs* (all of them when run locally)."""
+    """This Cloud Run task's share of *drugs* (all of them when run locally). Drugs are dealt out in turn, so
+    every task gets the same number of drugs, give or take one, and no drug goes to two tasks."""
     idx, count = config.CLOUD_RUN_TASK_INDEX, config.CLOUD_RUN_TASK_COUNT
     if count <= 1:
         return drugs
     shard = [d for i, d in enumerate(drugs) if i % count == idx]
-    logger.info("[SHARD] Task %d/%d -> %d drug(s): %s", idx + 1, count, len(shard), shard)
+    logger.info("[SHARD] Task %d/%d -> %d of %d drug(s): %s", idx + 1, count, len(shard), len(drugs), shard)
     return shard
 
 
