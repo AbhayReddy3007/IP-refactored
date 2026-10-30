@@ -401,6 +401,8 @@ BQ_ARBITRAGE_TABLE      = os.getenv("BQ_ARBITRAGE_TABLE", "cognito-prod-394707.c
 #   forecast_s3          — patent layering + filing-stage table (steps 1-3), one row per patent
 #   filing_pattern_table — innovator filing patterns (step 4), one row per innovator
 #   company_analysis_table — the company's business-strategy / patent-expansion incentive (step 5)
+# Retries (after the first attempt) of a drug's innovator filing-pattern analysis in forecast_analysis().
+FORECAST_MAX_RETRIES = int(os.getenv("FORECAST_MAX_RETRIES", "1"))
 BQ_FORECAST_S3_TABLE      = os.getenv("BQ_FORECAST_S3_TABLE", "cognito-prod-394707.cognito_prod_datamart.forecast_s3")
 BQ_FILING_PATTERN_TABLE   = os.getenv("BQ_FILING_PATTERN_TABLE", "cognito-prod-394707.cognito_prod_datamart.filing_pattern_table")
 BQ_COMPANY_ANALYSIS_TABLE = os.getenv("BQ_COMPANY_ANALYSIS_TABLE", "cognito-prod-394707.cognito_prod_datamart.company_analysis_table")

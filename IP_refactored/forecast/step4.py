@@ -21,10 +21,12 @@ from google.cloud import bigquery
 
 load_dotenv(override=True)
 
+from .. import config, gcp_utils
+
 # ✅ CONFIG
 MAX_CONCURRENT_DRUGS = 3
 TIMEOUT_PER_DRUG = 300
-MAX_RETRIES = 3
+MAX_RETRIES = config.FORECAST_MAX_RETRIES
 LOG_FILE = "batch_errors.log"
 
 # ✅ BIGQUERY CONFIG
@@ -32,7 +34,6 @@ BQ_LOCATION = "asia-south1"
 
 OUTPUT_DIR = None  # No longer used — output goes to GCS
 
-from .. import config, gcp_utils
 from ..drug_list import list_glp1_patent_files
 from ..gemini_utils import gemini_generate_async
 
@@ -48,7 +49,7 @@ def log_error(msg):
 # Gemini configuration (for inlined analysis)
 # ─────────────────────────────────────────────
 
-_GEMINI_MODEL          = "gemini-2.5-flash"
+_GEMINI_MODEL          = config.GEMINI_TEXT_MODEL
 
 _REGISTRIES = [
     {"name": "ClinicalTrials.gov",          "url": "https://clinicaltrials.gov/"},
@@ -357,7 +358,7 @@ async def process_drug(i, total, drug, semaphore, bq_client, results, failed):
 
     print(f"\n[{i}/{total}] {drug}")
 
-    for attempt in range(MAX_RETRIES):
+    for attempt in range(MAX_RETRIES + 1):
         try:
             async with semaphore:
                 result = await asyncio.wait_for(
@@ -377,7 +378,7 @@ async def process_drug(i, total, drug, semaphore, bq_client, results, failed):
             raise Exception("Empty result")
 
         except Exception as e:
-            if attempt < MAX_RETRIES - 1:
+            if attempt < MAX_RETRIES:
                 wait = (2 ** attempt) + random.random()
                 print(f"[Retry] {drug} in {wait:.2f}s")
                 await asyncio.sleep(wait)

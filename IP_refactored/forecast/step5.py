@@ -62,7 +62,7 @@ BQ_DATASET_ID    = os.getenv("BQ_DATASET_ID",        "cognito_prod_datamart")
 BQ_TABLE_ID      = os.getenv("BQ_TABLE_ID",          "company_analysis_table")
 CREDENTIALS_PATH = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 
-GEMINI_MODEL    = "gemini-2.5-flash-preview-05-20"
+GEMINI_MODEL    = config.GEMINI_TEXT_MODEL
 
 _HTTP_HEADERS = {
     "User-Agent": "PatentPipeline/1.0 (patent.analysis@example.com)",

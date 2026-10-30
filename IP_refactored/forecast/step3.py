@@ -63,7 +63,7 @@ from .bq_utils import load_patent_loe
 # Gemini client
 # ─────────────────────────────────────────────
 
-_GEMINI_MODEL = "gemini-2.0-flash"
+_GEMINI_MODEL = config.GEMINI_TEXT_MODEL
 
 
 # ─────────────────────────────────────────────

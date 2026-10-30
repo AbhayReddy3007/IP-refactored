@@ -50,7 +50,7 @@ from ..gemini_utils import gemini_generate_async
 # Config
 # ─────────────────────────────────────────────
 
-_GEMINI_MODEL = "gemini-2.5-flash"
+_GEMINI_MODEL = config.GEMINI_TEXT_MODEL
 
 _CURRENT_YEAR  = datetime.now().year
 _CURRENT_DATE  = datetime.now().strftime("%Y-%m-%d")
