@@ -243,7 +243,7 @@ def build_report(drug: str, shortlisted: pd.DataFrame, arbitrage: pd.DataFrame, 
 
     story = [
         Paragraph(f"{drug} — Regulatory Exclusivity &amp; PTE Analysis", st["title"]),
-        Paragraph(f"IPD Patent Analysis Tool — Automated Report &nbsp;|&nbsp; Generated {date.today().strftime('%d %B %Y')}", st["subtitle"]),
+        Paragraph(f"Generated {date.today().strftime('%d %B %Y')}", st["subtitle"]),
         HRFlowable(width="100%", thickness=1.5, color=ru.NAVY, spaceAfter=6),
         *_kpi_bar(shortlisted, summary),
         *_section_header("1. Strategic Overview (AI-Generated)", st),
