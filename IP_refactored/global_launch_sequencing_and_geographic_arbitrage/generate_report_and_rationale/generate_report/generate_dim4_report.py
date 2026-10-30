@@ -109,7 +109,7 @@ def _names(codes) -> str:
 
 def _narrative_prompt(drug: str, shortlisted: pd.DataFrame, arbitrage: pd.DataFrame) -> str:
     expiry = [
-        f"  {utils.jurisdiction_name(r['Jurisdiction'])} | Patent: {r['Patent Number']} | {r['Step 1 Claim Category']} | "
+        f"  {utils.jurisdiction_name(r['Jurisdiction'])} | Patent: {r['Patent Number']} | {r['Patent Type']} | "
         f"Expiry Year: {r['Controlling Patent Expiry Year']} | Gap: {r['Expiry Gap (Years)']} yrs | PTE: {r['PTE (months)']} months"
         for _, r in shortlisted.iterrows()]
     rows = [
@@ -255,7 +255,7 @@ def _narrative_flowables(narrative: str, st: dict) -> list:
 
 def build_report(drug: str, shortlisted: pd.DataFrame, arbitrage: pd.DataFrame, rationale: str, output_path: str) -> str:
     """Write the PDF to *output_path* and return it."""
-    shortlisted = utils.prepare_shortlist(shortlisted)
+    shortlisted = utils.prepare_shortlist(shortlisted).rename(columns={"Step 1 Claim Category": "Patent Type"})
     st = _styles()
     width = letter[0] - 40 * mm
 
@@ -283,7 +283,7 @@ def build_report(drug: str, shortlisted: pd.DataFrame, arbitrage: pd.DataFrame, 
         story += [badge, Spacer(1, 10)]
 
     # Shortlisted patents
-    columns = ["Patent Number", "Jurisdiction", "Step 1 Claim Category", "Controlling Patent Expiry Year", "Expiry Gap (Years)", "Tag"]
+    columns = ["Patent Number", "Jurisdiction", "Patent Type", "Controlling Patent Expiry Year", "Expiry Gap (Years)", "Tag"]
     story += [Paragraph("Shortlisted Secondary Patents", st["h1"]),
               _table(columns, shortlisted[columns].values.tolist(), [width / len(columns)] * len(columns), st), Spacer(1, 10)]
 
@@ -304,7 +304,7 @@ def build_report(drug: str, shortlisted: pd.DataFrame, arbitrage: pd.DataFrame, 
               *_narrative_flowables(generate_narrative(drug, shortlisted, arbitrage, rationale), st)]
 
     # Patent expiry summary
-    columns = ["Patent Number", "Jurisdiction", "Step 1 Claim Category", "Controlling Patent Expiry Year", "Expiry Gap (Years)", "PTE (months)"]
+    columns = ["Patent Number", "Jurisdiction", "Patent Type", "Controlling Patent Expiry Year", "Expiry Gap (Years)", "PTE (months)"]
     story += [PageBreak(), Paragraph("Patent Expiry Summary", st["h1"]),
               HRFlowable(width="100%", thickness=1, color=ru.NAVY, spaceAfter=6),
               _table(columns, shortlisted[columns].values.tolist(), [width / len(columns)] * len(columns), st),

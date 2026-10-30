@@ -5,6 +5,8 @@ from datetime import date
 import pandas as pd
 from dateutil.relativedelta import relativedelta
 
+from .. import config
+from ..utils import year_from_value
 from .constants import PTE_RULES
 
 logger = logging.getLogger(__name__)
@@ -86,7 +88,8 @@ def compute_expiries(shortlisted: pd.DataFrame) -> None:
 
 def apply_type_overrides(shortlisted: pd.DataFrame, filtered_df: pd.DataFrame) -> None:
     """A jurisdiction with a non-forecasted patent expires at the base term; one with only forecasted
-    patents expires in the current year."""
+    patents expires in its filing year + config.PATENT_TERM_YEARS (20), the same rule the master table uses
+    for forecasted rows (the current year if there is no usable filing year)."""
     if "Type" not in filtered_df.columns:
         logger.warning("[LAUNCH] 'Type' not found in the master rows — skipping the Type-based expiry override")
         return
@@ -96,19 +99,25 @@ def apply_type_overrides(shortlisted: pd.DataFrame, filtered_df: pd.DataFrame) -
     has_real_patent = set(zip(real["Drug Name"], real["Jurisdiction"]))
 
     current_year = date(date.today().year, 1, 1)
-    to_base = to_current_year = 0
+    to_base = to_forecast_term = to_current_year = 0
     for idx, row in shortlisted.iterrows():
         if (row["Drug Name"], row["Jurisdiction"]) in has_real_patent:
             shortlisted.at[idx, "Adjusted Expiry (with PTE)"] = row["Base Patent Term (Filing+20y)"]
             shortlisted.at[idx, "PTE Status"] = "Overridden (non-forecasted patent exists)"
             to_base += 1
         else:
-            shortlisted.at[idx, "Adjusted Expiry (with PTE)"] = current_year
+            filing_year = year_from_value(row["Filing Date"])
+            if filing_year is None:
+                shortlisted.at[idx, "Adjusted Expiry (with PTE)"] = current_year
+                to_current_year += 1
+            else:
+                shortlisted.at[idx, "Adjusted Expiry (with PTE)"] = date(int(filing_year) + config.PATENT_TERM_YEARS, 1, 1)
+                to_forecast_term += 1
             shortlisted.at[idx, "PTE Status"] = "Overridden (all forecasted)"
-            to_current_year += 1
         shortlisted.at[idx, "PTE Months (Granted)"] = 0
         shortlisted.at[idx, "PTE Capped (Post-Approval Cap)"] = False
-    logger.info("[LAUNCH] Type-based expiry overrides: %d to the base term, %d to the current year", to_base, to_current_year)
+    logger.info("[LAUNCH] Type-based expiry overrides: %d to the base term, %d to filing year + %d (forecasted), "
+                "%d to the current year (no filing year)", to_base, to_forecast_term, config.PATENT_TERM_YEARS, to_current_year)
 
 
 def longest_expiry_per_jurisdiction(shortlisted: pd.DataFrame) -> pd.DataFrame:
