@@ -57,7 +57,7 @@ _CURRENT_DATE  = datetime.now().strftime("%Y-%m-%d")
 
 BQ_PROJECT_ID      = os.getenv("BQ_PROJECT_ID", "cognito-prod-394707")
 BQ_DATASET_ID      = os.getenv("BQ_DATASET_ID", "cognito_prod_datamart")
-BQ_TABLE_NAME      = os.getenv("BQ_TABLE_NAME")         # drug-company mapping table
+DRUG_COMPANY_TABLE = config.DRUG_COMPANY_TABLE         # drug-company mapping table
 BQ_SERVICE_ACCOUNT = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 
 # ── Input BQ tables ──────────────────────────────────────────────────────────
@@ -86,13 +86,13 @@ def _load_drug_company_map() -> Dict[str, Dict]:
     Queries BigQuery for drug → parent company mapping.
     Returns dict: {drug_name_lower: {"company": str, "geographies": [str]}}
     """
-    if not all([BQ_PROJECT_ID, BQ_DATASET_ID, BQ_TABLE_NAME]):
-        print("[BQ] Missing BQ_TABLE_NAME config — drug-company mapping unavailable")
+    if not DRUG_COMPANY_TABLE:
+        print("[BQ] Missing DRUG_COMPANY_TABLE config — drug-company mapping unavailable")
         return {}
 
     try:
         client = _get_bq_client()
-        fq_table = f"{BQ_PROJECT_ID}.{BQ_DATASET_ID}.{BQ_TABLE_NAME}"
+        fq_table = DRUG_COMPANY_TABLE
 
         # Same GLP-1 drug universe as the rest of the pipeline (drug_list.GLP1_DRUG_QUERY)
         _glp1_where = GLP1_DRUG_QUERY.strip().split("WHERE", 1)[1]

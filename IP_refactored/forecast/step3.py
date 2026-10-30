@@ -870,6 +870,9 @@ def _get_patent_text(drug_name: str, patent_filename: str) -> str:
     """Fetches the full patent text (its AlloyDB chunks) for a given drug + filename."""
     try:
         chunks = _query_collection(get_or_create_collection(drug_name), (patent_filename or "").strip())
+        if not chunks:
+            print(f"[STEP 2] WARNING: no patent text found for source file {patent_filename!r} - "
+                  f"layering falls back to the claim analysis only")
         return "\n\n".join(chunks) if chunks else ""
     except Exception as e:
         print(f"[STEP 2] AlloyDB fetch failed for {patent_filename}: {e}")

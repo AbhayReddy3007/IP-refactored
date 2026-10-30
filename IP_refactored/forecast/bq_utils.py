@@ -92,6 +92,15 @@ def _default_schema(df: pd.DataFrame) -> List[bigquery.SchemaField]:
     return [bigquery.SchemaField(col, kind(df[col])) for col in df.columns]
 
 
+def _coerce_to_table(df: pd.DataFrame, schema: List[bigquery.SchemaField]) -> pd.DataFrame:
+    """bq_utils.coerce_to_schema, plus DATE columns (ISO strings -> dates), which it does not handle."""
+    df = coerce_to_schema(df, schema)
+    for field in schema:
+        if field.field_type == "DATE" and field.name in df.columns:
+            df[field.name] = pd.to_datetime(df[field.name], errors="coerce").dt.date
+    return df
+
+
 def write_forecast_s3(drug: str, forecast_s3: pd.DataFrame) -> None:
     """Replace the drug's rows in forecast_s3."""
     if forecast_s3.empty:
@@ -119,7 +128,7 @@ def write_company_analysis(company: str, row: Dict, schema: List[bigquery.Schema
     """Replace the company's row in company_analysis_table (company-level, shared by its drugs)."""
     df = pd.DataFrame([row])
     full_schema = table_schema(config.BQ_COMPANY_ANALYSIS_TABLE, schema)
-    df = coerce_to_schema(df, full_schema)
+    df = _coerce_to_table(df, full_schema)
     replace_drug_rows(df, config.BQ_COMPANY_ANALYSIS_TABLE, [f for f in full_schema if f.name in df.columns],
                       company, drug_column="company")
 

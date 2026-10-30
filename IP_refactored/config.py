@@ -403,6 +403,9 @@ BQ_ARBITRAGE_TABLE      = os.getenv("BQ_ARBITRAGE_TABLE", "cognito-prod-394707.c
 #   company_analysis_table — the company's business-strategy / patent-expansion incentive (step 5)
 # Retries (after the first attempt) of a drug's innovator filing-pattern analysis in forecast_analysis().
 FORECAST_MAX_RETRIES = int(os.getenv("FORECAST_MAX_RETRIES", "1"))
+# Drug -> parent company (columns cleaned_generic_name, Parent_Company_Name, Drug_Geography) used by forecast_analysis();
+# defaults to the drug list view. If the lookup fails the company is found by a Gemini web search.
+DRUG_COMPANY_TABLE = os.getenv("DRUG_COMPANY_TABLE") or os.getenv("BQ_TABLE_NAME") or DRUG_LIST_VIEW
 BQ_FORECAST_S3_TABLE      = os.getenv("BQ_FORECAST_S3_TABLE", "cognito-prod-394707.cognito_prod_datamart.forecast_s3")
 BQ_FILING_PATTERN_TABLE   = os.getenv("BQ_FILING_PATTERN_TABLE", "cognito-prod-394707.cognito_prod_datamart.filing_pattern_table")
 BQ_COMPANY_ANALYSIS_TABLE = os.getenv("BQ_COMPANY_ANALYSIS_TABLE", "cognito-prod-394707.cognito_prod_datamart.company_analysis_table")

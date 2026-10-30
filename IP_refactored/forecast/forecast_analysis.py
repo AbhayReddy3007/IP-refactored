@@ -147,7 +147,11 @@ async def _company_analysis(company: str, drug: str, reset: bool) -> Dict:
         logger.warning("[FORECAST] %s: no business-strategy analysis for %s (%s)", drug, company, assessment["error"])
         return {}
     row = _assessment_to_bq_row(assessment)
-    await asyncio.to_thread(write_company_analysis, company, row, COMPANY_ANALYSIS_SCHEMA)
+    try:
+        await asyncio.to_thread(write_company_analysis, company, row, COMPANY_ANALYSIS_SCHEMA)
+    except Exception:
+        # The analysis is still used for this forecast; only its storage failed.
+        logger.exception("[FORECAST] %s: could not store the %s analysis in %s", drug, company, config.BQ_COMPANY_ANALYSIS_TABLE)
     return row
 
 
