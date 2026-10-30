@@ -82,4 +82,5 @@ def prepare_shortlist(shortlisted: pd.DataFrame) -> pd.DataFrame:
     df = shortlisted.copy()
     df["PTE (months)"] = df.apply(_pte_months, axis=1)
     df["Controlling Patent Expiry Year"] = df["Adjusted Expiry (with PTE)"].map(expiry_year)
+    df["Filing + 20y Expiry Year"] = df["Base Patent Term (Filing+20y)"].map(expiry_year)
     return df

@@ -4,7 +4,7 @@ generate_dim4_report.py
 Global Launch Sequencing and Arbitrage PDF report (Letter), built from the run's own results (the
 shortlisted patents and the arbitrage summary; nothing is read back from BigQuery):
 
-    Cover (drug, subtitle, date) · Dimension IV badge · Shortlisted Secondary Patents ·
+    Cover (drug, subtitle, date) · Dimension IV badge · Shortlisted Secondary Market Patents ·
     Geographic Arbitrage Map (table and a loss-of-exclusivity chart) · Analysis (Gemini: patent
     landscape, geographic arbitrage, key protection gaps) · Patent Expiry Summary
 
@@ -263,7 +263,7 @@ def build_report(drug: str, shortlisted: pd.DataFrame, arbitrage: pd.DataFrame, 
         Spacer(1, 40),
         Paragraph(ru.esc(drug), st["title"]),
         HRFlowable(width="100%", thickness=2, color=ru.NAVY, spaceAfter=6),
-        Paragraph("Shortlisted Secondary Patents &amp; Geographic Arbitrage Analysis", st["body"]),
+        Paragraph("Shortlisted Secondary Market Patents &amp; Geographic Arbitrage Analysis", st["body"]),
         Paragraph(f"Generated {datetime.now().strftime('%B %d, %Y')}", st["meta"]),
         Spacer(1, 20),
     ]
@@ -284,8 +284,10 @@ def build_report(drug: str, shortlisted: pd.DataFrame, arbitrage: pd.DataFrame, 
 
     # Shortlisted patents
     columns = ["Patent Number", "Jurisdiction", "Patent Type", "Controlling Patent Expiry Year", "Expiry Gap (Years)", "Tag"]
-    story += [Paragraph("Shortlisted Secondary Patents", st["h1"]),
-              _table(columns, shortlisted[columns].values.tolist(), [width / len(columns)] * len(columns), st), Spacer(1, 10)]
+    # In this table the controlling expiry year is the patent's filing date + 20 years (no PTE)
+    secondary = shortlisted.assign(**{"Controlling Patent Expiry Year": shortlisted["Filing + 20y Expiry Year"]})
+    story += [Paragraph("Shortlisted Secondary Market Patents", st["h1"]),
+              _table(columns, secondary[columns].values.tolist(), [width / len(columns)] * len(columns), st), Spacer(1, 10)]
 
     # Geographic arbitrage map
     if not arbitrage.empty:
