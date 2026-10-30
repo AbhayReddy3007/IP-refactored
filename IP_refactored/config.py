@@ -108,6 +108,11 @@ DIMENSION_PTE_ANALYSIS                 = os.getenv("DIMENSION_PTE_ANALYSIS", "PT
 DIMENSION_FORECAST                     = os.getenv("DIMENSION_FORECAST", "Forecast Analysis")
 DIMENSION_LITIGATION                   = os.getenv("DIMENSION_LITIGATION", "Litigation Analysis")
 
+# File names (without .pdf) of the reports that do not take their dimension's name.
+REPORT_NAME_PATENT_STRENGTH = os.getenv("REPORT_NAME_PATENT_STRENGTH", "Patent Strength and Invalidity Opportunity")
+REPORT_NAME_FORECAST        = os.getenv("REPORT_NAME_FORECAST", "Forecast_Report")
+REPORT_NAME_LITIGATION      = os.getenv("REPORT_NAME_LITIGATION", "Litigation_Analysis")
+
 # PDFs are sent inline to Gemini (Vertex has no Files API), so this caps the PDF size.
 GEMINI_FILE_SIZE_LIMIT_MB = int(os.getenv("GEMINI_FILE_SIZE_LIMIT_MB", "50"))
 MAX_UPLOAD_RETRIES        = int(os.getenv("MAX_UPLOAD_RETRIES", "3"))
@@ -258,7 +263,7 @@ RUN_FORECAST = os.getenv("RUN_FORECAST", "true").strip().lower() not in ("0", "f
 #   patent_thicket_and_circumvention — only that dimension (needs the drug's glp_master_loe rows)
 #   global_launch_sequencing_and_geographic_arbitrage — only that dimension (needs the drug's glp_master_loe rows)
 #   litigations                      — only that dimension (needs the drug's glp_master_loe rows)
-IP_DIMENSION = os.getenv("IP_DIMENSION", "primary_market_entry_horizon").strip().lower()
+IP_DIMENSION = os.getenv("IP_DIMENSION", "litigations").strip().lower()
 
 # Rationale of a drug that has no patents for a dimension to assess (patent_strength, patent_thicket_and_circumvention).
 NO_QUALIFYING_PATENTS_RATIONALE = (

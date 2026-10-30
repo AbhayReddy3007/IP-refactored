@@ -9,9 +9,9 @@ BigQuery): the drug's rows of the litigation table.
 
 Gemini writes the text. A drug with no cases gets a short one-page report without Gemini. The report is
 uploaded to gs://{REPORT_GCS_BUCKET}/{REPORT_GCS_PATH}/:
-    {drug}/{GCS_IP_SUBFOLDER}/Litigation Analysis.pdf
-    {drug}/{GCS_IP_SUBFOLDER}/archive/Litigation Analysis+{timestamp}.pdf
-(the file name is config.DIMENSION_LITIGATION)
+    {drug}/{GCS_IP_SUBFOLDER}/Litigation_Analysis.pdf
+    {drug}/{GCS_IP_SUBFOLDER}/archive/Litigation_Analysis+{timestamp}.pdf
+(the file name is config.REPORT_NAME_LITIGATION)
 
     report_for_drug(drug, rows) -> {"drug_name", "gcs_uri", "archive_uri"}
 """
@@ -365,4 +365,4 @@ def build_report(drug_name: str, rows: List[Dict], output_path: str) -> str:
 def report_for_drug(drug_name: str, rows: List[Dict]) -> dict:
     """Build the report in a temporary directory and upload it. Called at the end of every
     litigation_analysis run. Returns {"drug_name", "gcs_uri", "archive_uri"}."""
-    return ru.publish_report(drug_name, config.DIMENSION_LITIGATION, lambda path: build_report(drug_name, rows, path))
+    return ru.publish_report(drug_name, config.REPORT_NAME_LITIGATION, lambda path: build_report(drug_name, rows, path))

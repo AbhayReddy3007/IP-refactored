@@ -18,7 +18,7 @@ Per drug:
     4. Upload it to gs://{REPORT_GCS_BUCKET}/{REPORT_GCS_PATH}/:
          {drug}/{GCS_IP_SUBFOLDER}/Patent Strength and Invalidity Opportunity.pdf
          {drug}/{GCS_IP_SUBFOLDER}/archive/Patent Strength and Invalidity Opportunity+{timestamp}.pdf
-       (the file name is config.DIMENSION_PATENT_STRENGTH)
+       (the file name is config.REPORT_NAME_PATENT_STRENGTH)
 
 Usage:
     python -m IP_refactored.patent_strength.generate_report_and_rationale.generate_report --drug "Semaglutide"
@@ -391,7 +391,7 @@ def generate_report(drug_name: str, output_dir: Path, upload: bool = True) -> di
     if upload:
         gcs_uri, archive_uri = ru.upload_report(
             drug_name, Path(local_path).read_bytes(), datetime.now().strftime("%Y%m%d_%H%M%S"),
-            report_name=config.DIMENSION_PATENT_STRENGTH,
+            report_name=config.REPORT_NAME_PATENT_STRENGTH,
         )
         logger.info("[REPORT] %s: uploaded: %s | archive: %s", drug_name, gcs_uri, archive_uri)
     return {"drug_name": drug_name, "local_path": local_path, "gcs_uri": gcs_uri, "archive_uri": archive_uri}

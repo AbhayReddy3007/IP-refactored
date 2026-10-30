@@ -10,9 +10,9 @@ BigQuery): the scored forecast of the drug (what is written to forecasted_loe) a
 
 Gemini writes the text from a structured summary of the data. The report is uploaded to
 gs://{REPORT_GCS_BUCKET}/{REPORT_GCS_PATH}/:
-    {drug}/{GCS_IP_SUBFOLDER}/Forecast Analysis.pdf
-    {drug}/{GCS_IP_SUBFOLDER}/archive/Forecast Analysis+{timestamp}.pdf
-(the file name is config.DIMENSION_FORECAST)
+    {drug}/{GCS_IP_SUBFOLDER}/Forecast_Report.pdf
+    {drug}/{GCS_IP_SUBFOLDER}/archive/Forecast_Report+{timestamp}.pdf
+(the file name is config.REPORT_NAME_FORECAST)
 
     report_for_drug(drug, scored, patents) -> {"drug_name", "gcs_uri", "archive_uri"}
 """
@@ -255,5 +255,5 @@ def build_report(drug_name: str, scored: List[Dict], patents: pd.DataFrame, outp
 def report_for_drug(drug_name: str, scored: List[Dict], patents: pd.DataFrame) -> dict:
     """Build the report in a temporary directory and upload it. Called at the end of every
     forecast_analysis run. Returns {"drug_name", "gcs_uri", "archive_uri"}."""
-    return ru.publish_report(drug_name, config.DIMENSION_FORECAST,
+    return ru.publish_report(drug_name, config.REPORT_NAME_FORECAST,
                              lambda path: build_report(drug_name, scored, patents, path))
