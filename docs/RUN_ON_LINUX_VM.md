@@ -103,7 +103,7 @@ ALLOYDB_PASSWORD=<password>
 
 ## 4. Pre-flight checks
 
-Run these from the project root (the folder that contains `IP_refactored/`), with the venv active.
+Run these from the project root (the folder that contains `IP_pillar/`), with the venv active.
 
 **AlloyDB is reachable and pgvector is available:**
 
@@ -119,7 +119,7 @@ If this hangs, the VM can't reach the private IP. Check the VM is in the AlloyDB
 
 ```bash
 python - <<'EOF'
-from IP_refactored import config, gcp_utils
+from IP_pillar import config, gcp_utils
 print("Service account:", gcp_utils.get_credentials().service_account_email)
 print("BigQuery:", gcp_utils.run_query("SELECT 1 AS ok").to_dict("records"))
 print("GCS:", len(gcp_utils.list_blobs_with_prefix(config.GCS_PATENTS_PREFIX + "/")), "objects under", config.GCS_PATENTS_PREFIX)
@@ -133,7 +133,7 @@ EOF
 ```bash
 cd ~/ip-refactored && source .venv/bin/activate
 
-python -m IP_refactored.run_ip_dimension --drug "Semaglutide"
+python -m IP_pillar.run_ip_dimension --drug "Semaglutide"
 # same thing, via the installed command:
 run-ip-dimension --drug "Semaglutide"
 ```
@@ -144,8 +144,8 @@ Options:
 |---|---|
 | `--drug "Semaglutide"` | one drug |
 | `--drug "Semaglutide" --reindex` | ignore caches: re-extract, re-embed and re-analyse every patent |
-| `DRUG_NAME="Semaglutide, Tirzepatide" python -m IP_refactored.run_ip_dimension` | several drugs, one after another |
-| `python -m IP_refactored.run_ip_dimension` (no `DRUG_NAME`) | every GLP-1 drug with patents in GCS |
+| `DRUG_NAME="Semaglutide, Tirzepatide" python -m IP_pillar.run_ip_dimension` | several drugs, one after another |
+| `python -m IP_pillar.run_ip_dimension` (no `DRUG_NAME`) | every GLP-1 drug with patents in GCS |
 
 The exit code is `0` on success and `1` if the drug (or any drug in the list) failed.
 
@@ -153,7 +153,7 @@ The exit code is `0` on success and `1` if the drug (or any drug in the list) fa
 
 ```bash
 mkdir -p logs
-nohup python -m IP_refactored.run_ip_dimension --drug "Semaglutide" > "logs/semaglutide_$(date +%Y%m%d_%H%M%S).log" 2>&1 &
+nohup python -m IP_pillar.run_ip_dimension --drug "Semaglutide" > "logs/semaglutide_$(date +%Y%m%d_%H%M%S).log" 2>&1 &
 tail -f logs/semaglutide_*.log
 ```
 
@@ -196,7 +196,7 @@ ip-refactored/
 ├── pyproject.toml            package metadata + `run-ip-dimension` command
 ├── requirements.txt
 ├── docs/RUN_ON_LINUX_VM.md   this guide
-└── IP_refactored/
+└── IP_pillar/
     ├── config.py             every setting / env var (loads .env)
     ├── utils.py              shared pure helpers (normalisation, jurisdictions, dates, BQ naming)
     ├── gcp_utils.py          all GCP access: credentials, BigQuery/GCS clients, query/load/delete, GCS read/write
@@ -217,7 +217,7 @@ ip-refactored/
     │   ├── bq_utils.py                every BigQuery read; LOE table write (replace drug rows) + JSON snapshot
     │   └── generate_report_and_rationale/
     │       ├── generate_rationale.py  per-drug LOE metrics + the `Rationale` column of glp_master_loe
-    │       └── generate_report.py     2-page PDF per drug from glp_master_loe → GCS (`python -m IP_refactored.primary_market_entry_horizon.generate_report_and_rationale.generate_report`)
+    │       └── generate_report.py     2-page PDF per drug from glp_master_loe → GCS (`python -m IP_pillar.primary_market_entry_horizon.generate_report_and_rationale.generate_report`)
 ```
 
 ---
@@ -256,7 +256,7 @@ ip-refactored/
 | `FORMULATION_EXCEL_PATH`, `PUBMED_EMAIL`, `NCBI_API_KEY` | empty |
 | `INDEXER_CONCURRENCY`, `ANALYSIS_CONCURRENCY` | `10`, `5` |
 
-The full list, with comments, is in `IP_refactored/config.py`.
+The full list, with comments, is in `IP_pillar/config.py`.
 
 ---
 
@@ -269,6 +269,6 @@ The full list, with comments, is in `IP_refactored/config.py`.
 | `403` on `cognito-dev-380506...` tables | Data Viewer is missing on that project's datasets. |
 | AlloyDB `connection timed out` | The VM isn't in the AlloyDB VPC, or the firewall blocks 5432. |
 | `could not open extension control file ... vector` | Enable the `vector` extension on the AlloyDB instance (or connect as a user allowed to `CREATE EXTENSION`). |
-| `No approved PDFs found` | The GCS folder name or the patent_master approvals don't match the drug. Run `python -m IP_refactored.patent_filter "<drug>"` to see what is found. |
+| `No approved PDFs found` | The GCS folder name or the patent_master approvals don't match the drug. Run `python -m IP_pillar.patent_filter "<drug>"` to see what is found. |
 | Gemini `429 RESOURCE_EXHAUSTED` | Lower `ANALYSIS_CONCURRENCY` / `INDEXER_CONCURRENCY` in `.env`. |
 | A BigQuery write fails but the run continues | The JSON snapshot is still written; fix the cause and re-run the drug (cached steps are skipped). |

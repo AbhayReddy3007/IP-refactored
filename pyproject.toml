@@ -10,10 +10,10 @@ requires-python = ">=3.10"
 dynamic = ["dependencies"]
 
 [project.scripts]
-run-ip-dimension = "IP_refactored.run_ip_dimension:main"
+run-ip-dimension = "IP_pillar.run_ip_dimension:main"
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }
 
 [tool.setuptools.packages.find]
-include = ["IP_refactored*"]
+include = ["IP_pillar*"]
