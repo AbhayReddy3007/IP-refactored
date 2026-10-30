@@ -18,7 +18,6 @@ try:
 except ImportError:
     load_dotenv = lambda **kw: None  # Not needed on Cloud Run
 from google.cloud import bigquery
-from google.oauth2 import service_account
 
 load_dotenv(override=True)
 
@@ -30,16 +29,12 @@ LOG_FILE = "batch_errors.log"
 
 # ✅ BIGQUERY CONFIG
 BQ_LOCATION = "asia-south1"
-PROJECT_ID = "cognito-prod-394707"
-DATASET_ID = "cognito_prod_datamart"
-TABLE_ID = "filing_pattern_table"
-CREDENTIALS_PATH = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 
 OUTPUT_DIR = None  # No longer used — output goes to GCS
 
-# Import GCS cache
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from cog import gcs_cache
+from .. import config, gcp_utils
+from ..drug_list import list_glp1_patent_files
+from ..gemini_utils import gemini_generate_async
 
 _STEP4_SUBFOLDER = "innovator_patterns"
 
@@ -50,36 +45,8 @@ def log_error(msg):
     print(f"[STEP4 ERROR] {msg}")
 
 # ─────────────────────────────────────────────
-# IMPORT LOCAL MODULES
-# ─────────────────────────────────────────────
-# The containing directory is `forecast-main`, which is NOT a valid Python
-# package name (hyphens are illegal). The previous code tried
-#   importlib.import_module(f"{_pkg}.gcs_lister")
-# with _pkg = "forecast-main", which can never resolve. The actual location
-# of the supporting modules is the sibling `cog/` package (an `__init__.py`
-# is present there), so we import from `cog` directly — the same pattern
-# this file already uses for `gcs_cache` above.
-_here = Path(__file__).resolve().parent
-_parent = _here.parent
-
-# _parent.parent holds the IP_refactored package (for the shared gemini_utils).
-for _p in [str(_here), str(_parent), str(_parent.parent)]:
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
-
-# ✅ GCS — lives in `cog/`
-from cog import gcs_lister as _gcs
-get_gcs_client     = _gcs.get_gcs_client
-GCS_BUCKET_NAME    = _gcs.GCS_BUCKET_NAME
-GCS_PATENTS_PREFIX = _gcs.GCS_PATENTS_PREFIX
-
-# ✅ Drug universe filter (GLP-1 agonists only)
-from cog import drug_filter
-
-# ─────────────────────────────────────────────
 # Gemini configuration (for inlined analysis)
 # ─────────────────────────────────────────────
-from IP_refactored.gemini_utils import gemini_generate_async
 
 _GEMINI_MODEL          = "gemini-2.5-flash"
 
@@ -93,17 +60,6 @@ _REGISTRIES = [
     {"name": "CRIS",                        "url": "https://cris.nih.go.kr/"},
     {"name": "ReBEC",                       "url": "https://ensaiosclinicos.gov.br/"},
 ]
-
-# Optional vector-DB hook for storing analysis results. Lives in cog/ if
-# present; missing in this checkout, so wrap in try/except and proceed without.
-_vectordb_ingest = None
-try:
-    from cog import strategy_vectordb as _vdb  # type: ignore
-    _vectordb_ingest = _vdb.ingest_innovator_pattern
-    print("[VECTORDB] strategy_vectordb loaded — Step 4 results will be stored in innovator_filing_pattern_db")
-except Exception as _ve:
-    print(f"[VECTORDB] strategy_vectordb not available — results will only go to BQ/GCS: {_ve}")
-
 
 # ─────────────────────────────────────────────
 # Gemini call helpers (inlined from test_innovator_filing_patterns)
@@ -296,14 +252,11 @@ IMPORTANT:
 # ✅ BIGQUERY SETUP
 # ─────────────────────────────────────────────
 def get_bq_client():
-    if CREDENTIALS_PATH and os.path.exists(CREDENTIALS_PATH):
-        creds = service_account.Credentials.from_service_account_file(CREDENTIALS_PATH)
-        return bigquery.Client(credentials=creds, project=PROJECT_ID)
-    return bigquery.Client(project=PROJECT_ID)
+    return gcp_utils.get_bq_client()
 
 
 def create_dataset_if_not_exists(client):
-    dataset_ref = f"{PROJECT_ID}.{DATASET_ID}"
+    dataset_ref = config.BQ_FILING_PATTERN_TABLE.rsplit(".", 1)[0]
     dataset = bigquery.Dataset(dataset_ref)
     dataset.location = BQ_LOCATION
 
@@ -316,18 +269,9 @@ def create_dataset_if_not_exists(client):
 
 
 def create_table_if_not_exists(client):
-    table_ref = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+    table_ref = config.BQ_FILING_PATTERN_TABLE
 
-    schema = [
-        bigquery.SchemaField("drug", "STRING"),
-        bigquery.SchemaField("company", "STRING"),
-        bigquery.SchemaField("characterization", "STRING"),
-        bigquery.SchemaField("confidence", "STRING"),
-        bigquery.SchemaField("rationale", "STRING"),
-        bigquery.SchemaField("created_at", "TIMESTAMP"),
-    ]
-
-    table = bigquery.Table(table_ref, schema=schema)
+    table = bigquery.Table(table_ref, schema=FILING_PATTERN_SCHEMA)
 
     try:
         client.get_table(table_ref)
@@ -337,19 +281,32 @@ def create_table_if_not_exists(client):
         print("[BQ] Table created")
 
 
-def insert_into_bq(client, drug_name, result):
-    table_ref = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+FILING_PATTERN_SCHEMA = [
+    bigquery.SchemaField("drug", "STRING"),
+    bigquery.SchemaField("company", "STRING"),
+    bigquery.SchemaField("characterization", "STRING"),
+    bigquery.SchemaField("confidence", "STRING"),
+    bigquery.SchemaField("rationale", "STRING"),
+    bigquery.SchemaField("created_at", "TIMESTAMP"),
+]
 
-    rows = []
-    for inv in result.get("innovators", []):
-        rows.append({
-            "drug": drug_name,
-            "company": inv.get("company"),
-            "characterization": inv.get("characterization"),
-            "confidence": str(inv.get("confidence")),
-            "rationale": inv.get("rationale"),
-            "created_at": datetime.now(tz=timezone.utc).isoformat()
-        })
+
+def filing_pattern_rows(drug_name, result) -> list:
+    """One filing_pattern_table row per innovator in an analyze_innovator_filing_patterns() result."""
+    return [{
+        "drug": drug_name,
+        "company": inv.get("company"),
+        "characterization": inv.get("characterization"),
+        "confidence": str(inv.get("confidence")),
+        "rationale": inv.get("rationale"),
+        "created_at": datetime.now(tz=timezone.utc).isoformat(),
+    } for inv in result.get("innovators", [])]
+
+
+def insert_into_bq(client, drug_name, result):
+    table_ref = config.BQ_FILING_PATTERN_TABLE
+
+    rows = filing_pattern_rows(drug_name, result)
 
     if rows:
         errors = client.insert_rows_json(table_ref, rows)
@@ -362,14 +319,8 @@ def insert_into_bq(client, drug_name, result):
 # GCS LIST
 # ─────────────────────────────────────────────
 def list_all_gcs_drugs():
-    client = get_gcs_client()
-    prefix = GCS_PATENTS_PREFIX.rstrip("/") + "/"
-
-    blobs = list(client.list_blobs(GCS_BUCKET_NAME, prefix=prefix))
-
-    drugs = sorted({b.name.split("/")[1] for b in blobs if "/" in b.name})
+    drugs = sorted(list_glp1_patent_files())
     print(f"[GCS] Found {len(drugs)} drugs")
-    drugs = drug_filter.filter_allowed_drugs(drugs)
     return drugs
 
 # ─────────────────────────────────────────────
@@ -390,7 +341,7 @@ def save_drug_csv(drug, result):
             inv.get("confidence"),
         ])
 
-    uri = gcs_cache.write_bytes(
+    uri = gcp_utils.write_bytes(
         _STEP4_SUBFOLDER,
         f"{drug}.csv",
         buf.getvalue().encode("utf-8"),
@@ -419,15 +370,6 @@ async def process_drug(i, total, drug, semaphore, bq_client, results, failed):
 
                 save_drug_csv(drug, result)
                 insert_into_bq(bq_client, drug, result)
-
-                # Store in vector DB if the optional cog.strategy_vectordb
-                # module is available. Failure here doesn't fail the drug —
-                # the BQ/GCS writes already succeeded.
-                if _vectordb_ingest is not None:
-                    try:
-                        _vectordb_ingest(drug, result)
-                    except Exception as ve:
-                        print(f"  [VECTORDB] Failed to store {drug}: {ve}")
 
                 print(f"✅ Done: {drug}")
                 return
@@ -482,10 +424,6 @@ if __name__ == "__main__":
 
     if args.drug:
         drugs = [args.drug]
-        drugs = drug_filter.filter_allowed_drugs(drugs)
-        if not drugs:
-            print(f"'{args.drug}' is not in the GLP-1 drug universe — nothing to do.")
-            sys.exit(1)
     else:
         drugs = list_all_gcs_drugs()
 

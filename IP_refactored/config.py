@@ -105,6 +105,7 @@ DIMENSION_PATENT_STRENGTH              = os.getenv("DIMENSION_PATENT_STRENGTH", 
 DIMENSION_PATENT_THICKET               = os.getenv("DIMENSION_PATENT_THICKET", "Patent Thicket and Circumvention Feasibility")
 DIMENSION_GLOBAL_LAUNCH                = os.getenv("DIMENSION_GLOBAL_LAUNCH", "Global Launch Sequencing & Arbitrage")
 DIMENSION_PTE_ANALYSIS                 = os.getenv("DIMENSION_PTE_ANALYSIS", "PTE Analysis")
+DIMENSION_FORECAST                     = os.getenv("DIMENSION_FORECAST", "Forecast Analysis")
 
 # PDFs are sent inline to Gemini (Vertex has no Files API), so this caps the PDF size.
 GEMINI_FILE_SIZE_LIMIT_MB = int(os.getenv("GEMINI_FILE_SIZE_LIMIT_MB", "50"))
@@ -251,6 +252,10 @@ GCS_JSON_EXPORT = os.getenv("GCS_JSON_EXPORT", "loe_json_exports")
 #   patent_strength                  — only that dimension (needs the drug's glp_master_loe rows)
 #   patent_thicket_and_circumvention — only that dimension (needs the drug's glp_master_loe rows)
 #   global_launch_sequencing_and_geographic_arbitrage — only that dimension (needs the drug's glp_master_loe rows)
+# primary_market_entry_horizon() also runs forecast_analysis() for the drug, between publishing glp_patent_loe
+# (its input) and building glp_master_loe (which merges the new forecasted_loe rows). Set to false to skip it.
+RUN_FORECAST = os.getenv("RUN_FORECAST", "true").strip().lower() not in ("0", "false", "no", "off")
+
 IP_DIMENSION = os.getenv("IP_DIMENSION", "global_launch_sequencing_and_geographic_arbitrage").strip().lower()
 
 # Rationale of a drug that has no patents for a dimension to assess (patent_strength, patent_thicket_and_circumvention).
@@ -390,6 +395,15 @@ BQ_THICKET_SCORE_TABLE  = os.getenv("BQ_THICKET_SCORE_TABLE", "cognito-prod-3947
 # Global launch sequencing and geographic arbitrage: per-patent expiries and per-jurisdiction arbitrage.
 BQ_LAUNCH_PATENTS_TABLE = os.getenv("BQ_LAUNCH_PATENTS_TABLE", "cognito-prod-394707.cognito_prod_datamart.shortlisted_secondary_patents_table")
 BQ_ARBITRAGE_TABLE      = os.getenv("BQ_ARBITRAGE_TABLE", "cognito-prod-394707.cognito_prod_datamart.arbitrage_summary_table")
+
+# forecast_analysis(): reads glp_patent_loe, writes forecasted_loe (FORECASTED_LOE_TABLE above), which the
+# next primary_market_entry_horizon run merges into glp_master_loe.
+#   forecast_s3          — patent layering + filing-stage table (steps 1-3), one row per patent
+#   filing_pattern_table — innovator filing patterns (step 4), one row per innovator
+#   company_analysis_table — the company's business-strategy / patent-expansion incentive (step 5)
+BQ_FORECAST_S3_TABLE      = os.getenv("BQ_FORECAST_S3_TABLE", "cognito-prod-394707.cognito_prod_datamart.forecast_s3")
+BQ_FILING_PATTERN_TABLE   = os.getenv("BQ_FILING_PATTERN_TABLE", "cognito-prod-394707.cognito_prod_datamart.filing_pattern_table")
+BQ_COMPANY_ANALYSIS_TABLE = os.getenv("BQ_COMPANY_ANALYSIS_TABLE", "cognito-prod-394707.cognito_prod_datamart.company_analysis_table")
 
 # Per-run Gemini usage (one row per model per drug).
 GEMINI_STATS_TABLE = os.getenv("GEMINI_STATS_TABLE", f"{PROJECT_ID}.{BQ_DATASET_ID}.gemini_stats")

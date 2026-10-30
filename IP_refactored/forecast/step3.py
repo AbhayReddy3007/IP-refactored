@@ -50,39 +50,13 @@ from google.cloud import bigquery
 
 load_dotenv(override=True)
 
-# ── Make local modules importable when run as a standalone script ─────────────
-_here   = Path(__file__).resolve().parent
-_parent = _here.parent
-
-# _parent.parent holds the IP_refactored package (for the shared gemini_utils).
-for _p in [str(_here), str(_parent), str(_parent.parent)]:
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
-
-from IP_refactored.gemini_utils import gemini_generate_async
-
-# Note: `forecast-main` cannot be a Python package (hyphen in the directory
-# name makes it unimportable), so all helpers we need live in the sibling
-# `cog/` package. Importing from `cog` works for both interactive runs
-# (script mode, after sys.path insert above) and pipeline orchestration.
-import importlib  # still used below for optional/dynamic loads
-# Imported as `glp1_universe` (not `drug_filter`) because this file already
-# uses the local name `drug_filter` for a different concept — a CLI-supplied
-# set of drug names to shard by. See the --drugs argument near the bottom.
-from cog import drug_filter as glp1_universe
-try:
-    from cog import indexer as _indexer
-    from cog import blocking_analyser as _analyser
-    from cog import excel_exporter as _exporter
-    get_or_create_collection = _indexer.get_or_create_collection
-    get_all_chunks           = _analyser.get_all_chunks
-    _CHROMA_AVAILABLE        = True
-except Exception as _e:
-    print(f"[WARNING] ChromaDB/local imports unavailable: {_e}")
-    print("[WARNING] Step 2 will use Excel context only — no full patent text.")
-    _CHROMA_AVAILABLE = False
-    def get_or_create_collection(*a, **kw): return None
-    def get_all_chunks(*a, **kw): return []
+from .. import config, gcp_utils
+from ..chunking.indexer import get_or_create_collection
+from ..drug_list import drug_list
+from ..gemini_utils import gemini_generate_async
+from ..patent_thicket_and_circumvention.retrieval.alloydb_helpers import _query_collection
+from ..primary_market_entry_horizon.score_calculation import approval_date_fetcher as _fetcher_mod
+from .bq_utils import load_patent_loe
 
 
 # ─────────────────────────────────────────────
@@ -96,21 +70,15 @@ _GEMINI_MODEL = "gemini-2.0-flash"
 # BigQuery client & table names
 # ─────────────────────────────────────────────
 
-def _get_credentials():
-    """Get credentials: use service account file if available, else default (Cloud Run)."""
-    _creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
-    if _creds_path and os.path.exists(_creds_path):
-        from google.oauth2 import service_account
-        return service_account.Credentials.from_service_account_file(_creds_path)
-    return None
+class _LazyBQClient:
+    """The shared BigQuery client, created on first use so importing this module needs no credentials."""
+    def __getattr__(self, name):
+        return getattr(gcp_utils.get_bq_client(), name)
 
-_BQ_CLIENT = bigquery.Client(
-    project=os.getenv("BQ_PROJECT_ID", "cognito-prod-394707"),
-    credentials=_get_credentials(),
-)
 
-_LOE_TABLE           = "cognito-prod-394707.cognito_prod_datamart.loe_table_2"
-_CLINICAL_TABLE      = "cognito-prod-394707.cognito_prod_datamart.clinical_efficacy"
+_BQ_CLIENT = _LazyBQClient()
+
+_CLINICAL_TABLE = config.CLINICAL_EFFICACY_TABLE
 
 
 # ─────────────────────────────────────────────
@@ -133,72 +101,19 @@ _CATEGORY_DESCRIPTIONS = {
 # Load data from BigQuery (replaces load_excel)
 # ─────────────────────────────────────────────
 
-def load_loe_table() -> pd.DataFrame:
-    """Loads patent data from BigQuery loe_table (replaces pipeline Excel).
-    
-    Renames underscore-separated BQ column names to space-separated names
-    expected by the rest of the pipeline.
-    """
-    query = f"SELECT DISTINCT * FROM `{_LOE_TABLE}`"
+def load_loe_table(drug_filter: Optional[set] = None) -> pd.DataFrame:
+    """Loads the patent rows from glp_patent_loe (the blocking-analysis output) for the drugs in
+    *drug_filter*, or for every GLP-1 drug when it is None. Columns use the friendly names
+    ('Drug Name', 'Step 1 Claim Category', ...) the rest of the pipeline expects."""
     try:
-        df = _BQ_CLIENT.query(query).to_dataframe()
+        drugs = sorted(drug_filter) if drug_filter else drug_list()
+        frames = [f for f in (load_patent_loe(d) for d in drugs) if not f.empty]
+        if not frames:
+            print(f"[INPUT 1] No rows in {config.BQ_PATENT_LOE_TABLE} for {drugs}")
+            return pd.DataFrame()
+        df = pd.concat(frames, ignore_index=True)
         df.columns = [c.strip() for c in df.columns]
-        print(f"[INPUT 1] Loaded {len(df)} row(s) from: {_LOE_TABLE}")
-        print(f"[INPUT 1] Raw columns: {list(df.columns)}")
-
-        # ── Map BQ column names (underscores) → pipeline names (spaces) ──
-        _BQ_COL_MAP = {
-            "Drug_Name":                                "Drug Name",
-            "Patent_Number":                            "Patent Number",
-            "Jurisdiction":                             "Jurisdiction",
-            "Tag":                                      "Tag",
-            "Reason":                                   "Reason",
-            "Step_1_Claim_Category":                    "Step 1 Claim Category",
-            "Step_2_Matched_Elements":                  "Step 2 Matched Elements",
-            "S2_Active_Ingredient_Form":                "S2 Active Ingredient Form",
-            "S2_Formulation_Details":                   "S2 Formulation Details",
-            "S2_Route_of_Administration":               "S2 Route of Administration",
-            "S2_Device_Description":                    "S2 Device Description",
-            "S2_Combination_Tech_Process":              "S2 Combination Tech Process",
-            "Step_3_Technical_Barrier":                 "Step 3 Technical Barrier",
-            "Step_3_Confidence":                        "Step 3 Confidence",
-            "Step_3_Evidence_Type":                     "Step 3 Evidence Type",
-            "Step_3_Evidence_Summary":                  "Step 3 Evidence Summary",
-            "Step_4_Blocking_Indicator":                "Step 4 Blocking Indicator",
-            "Step_4_Confidence":                        "Step 4 Confidence",
-            "Step_4_Regulatory_Failure_if_Removed":     "Step 4 Regulatory Failure if Removed",
-            "Step_4_Bridging_Studies_Required":          "Step 4 Bridging Studies Required",
-            "Step_4_Formulation_Consistent_Across_Phases": "Step 4 Formulation Consistent Across Phases",
-            "Step_4_Reason":                            "Step 4 Reason",
-            "Step_5_Novel_Difficult":                   "Step 5 Novel Difficult",
-            "Step_5_Novelty_Signal":                    "Step 5 Novelty Signal",
-            "Step_5_First_in_Class":                    "Step 5 First in Class",
-            "Step_5_Prior_Failed_Attempts":             "Step 5 Prior Failed Attempts",
-            "Step_5_Complex_Implementation":            "Step 5 Complex Implementation",
-            "Step_5_Confidence":                        "Step 5 Confidence",
-            "Step_5_Reason":                            "Step 5 Reason",
-            "Filing_Date":                              "Filing Date",
-            "Grant_Date":                               "Grant Date",
-            "PTE_months":                               "PTE months",
-            "Pediatric_Exclusivity":                    "Pediatric Exclusivity",
-            "Phase":                                    "Phase",
-            "Launch_Date":                              "Launch Date",
-            "Approval_Date":                            "Approval Date",
-            "Approval_Date_Source":                      "Approval Date Source",
-            "Est_Approval_Year":                        "Est Approval Year",
-            "Exclusivity_Year":                         "Exclusivity Year",
-            "Controlling_Patent_Expiry_Year":           "Controlling Patent Expiry Year",
-            "Years_to_Entry":                           "Years to Entry",
-            "Avg_Years_to_Entry":                       "Avg Years to Entry",
-            "Score":                                    "Score",
-            "Avg_Years_to_Entry_US_EP":                 "Avg Years to Entry US EP",
-            "IP_Dimension_1_Score":                     "IP Dimension 1 Score",
-            "Source_File":                              "Source File",
-        }
-
-        # Apply rename — only for columns that exist in the DataFrame
-        rename_map = {k: v for k, v in _BQ_COL_MAP.items() if k in df.columns}
-        df = df.rename(columns=rename_map)
+        print(f"[INPUT 1] Loaded {len(df)} row(s) from: {config.BQ_PATENT_LOE_TABLE}")
 
         # ── Deduplicate ───────────────────────────────────────────────────
         # loe_table is written with `if_exists="append"` (see 2bq.py), so
@@ -232,7 +147,7 @@ def load_loe_table() -> pd.DataFrame:
         print(f"[INPUT 1] Renamed columns: {list(df.columns)}\n")
         return df
     except Exception as e:
-        print(f"[INPUT 1] Failed to load loe_table: {e}")
+        print(f"[INPUT 1] Failed to load {config.BQ_PATENT_LOE_TABLE}: {e}")
         return pd.DataFrame()
 
 
@@ -327,11 +242,7 @@ def _canonicalise_drug(name: str) -> str:
 _SUBMISSION_CACHE_SUBFOLDER = "regulatory_submissions"
 _SUBMISSION_CACHE_FILENAME  = "submission.json"
 
-try:
-    from cog import gcs_cache as _submission_cache
-except Exception as _e:
-    print(f"[SUBMISSION CACHE] gcs_cache unavailable ({_e}); will fetch every time")
-    _submission_cache = None
+_submission_cache = gcp_utils
 
 
 def _submission_cache_get(drug_name: str):
@@ -483,74 +394,27 @@ def _parse_date_or_year(val):
 # Approval date fetcher
 # ─────────────────────────────────────────────
 
-_APPROVAL_FETCH_AVAILABLE = False
-_fetch_approval_for_molecules = None
-try:
-    # approval_date_fetcher lives in cog/, not in forecast-main/ (which can
-    # never be a Python package — the hyphen makes it unimportable).
-    from cog import approval_date_fetcher as _fetcher_mod
-    _raw_fetch = _fetcher_mod.fetch_approval_dates
-
-    async def _fetch_approval_for_molecules(molecules: list) -> dict:
-        results = {}
-        for mol in molecules:
-            print(f"  [APPROVAL] Fetching for '{mol}'...")
-            try:
-                approval = await _raw_fetch(drug_name=mol, bq_companies=[], bq_brands=[], fetch_us=True, fetch_eu=True)
-                results[mol] = {"US": approval.get("US", {}).get("date"), "EU": approval.get("EU", {}).get("date")}
-            except Exception as e:
-                print(f"  [APPROVAL] Failed for '{mol}': {e}")
-                results[mol] = {"US": None, "EU": None}
-        return results
-
-    _APPROVAL_FETCH_AVAILABLE = True
-except Exception as _e:
-    print(f"[WARNING] approval_date_fetcher unavailable: {_e}")
+_raw_fetch = _fetcher_mod.fetch_approval_dates
 
 
-# ─────────────────────────────────────────────
-# GCS drug listing for filtering
-# ─────────────────────────────────────────────
-
-_GCS_DRUG_LIST_AVAILABLE = False
-_list_gcs_drug_names_fn = None
-try:
-    # gcs_lister lives in cog/, not in forecast-main/
-    from cog import gcs_lister as _gcs_mod
-    _gcs_client_fn     = _gcs_mod.get_gcs_client
-    _gcs_bucket        = _gcs_mod.GCS_BUCKET_NAME
-    _gcs_prefix        = _gcs_mod.GCS_PATENTS_PREFIX
-
-    def _list_gcs_drug_names_fn() -> list:
-        if not _gcs_bucket:
-            return []
+async def _fetch_approval_for_molecules(molecules: list) -> dict:
+    results = {}
+    for mol in molecules:
+        print(f"  [APPROVAL] Fetching for '{mol}'...")
         try:
-            client = _gcs_client_fn()
-            prefix = _gcs_prefix.rstrip("/") + "/"
-            all_blobs = list(client.list_blobs(_gcs_bucket, prefix=prefix))
-            prefix_depth = len(prefix.split("/")) - 1
-            folders = set()
-            for blob in all_blobs:
-                parts = blob.name.split("/")
-                if len(parts) > prefix_depth + 1:
-                    f = parts[prefix_depth].strip()
-                    if f:
-                        folders.add(f)
-            return sorted(folders)
+            approval = await _raw_fetch(drug_name=mol, bq_companies=[], bq_brands=[], fetch_us=True, fetch_eu=True)
+            results[mol] = {"US": approval.get("US", {}).get("date"), "EU": approval.get("EU", {}).get("date")}
         except Exception as e:
-            print(f"[GCS] Failed: {e}")
-            return []
-
-    _GCS_DRUG_LIST_AVAILABLE = True
-except Exception:
-    pass
+            print(f"  [APPROVAL] Failed for '{mol}': {e}")
+            results[mol] = {"US": None, "EU": None}
+    return results
 
 
 # ─────────────────────────────────────────────
 # Phase processing (merged from phase_processor.py)
 # ─────────────────────────────────────────────
 
-def _process_phase_input(clinical_df: pd.DataFrame) -> pd.DataFrame:
+async def _process_phase_input(clinical_df: pd.DataFrame) -> pd.DataFrame:
     """
     Processes phase data from clinical_efficacy BigQuery table.
 
@@ -675,7 +539,7 @@ def _process_phase_input(clinical_df: pd.DataFrame) -> pd.DataFrame:
         )
 
     # Fetch approval dates for marketed drugs only
-    if _APPROVAL_FETCH_AVAILABLE:
+    if True:
         all_marketed = set()
         for _, row in df.iterrows():
             if _normalise_phase(str(row.get(phase_col, ""))) == "Marketed":
@@ -688,18 +552,7 @@ def _process_phase_input(clinical_df: pd.DataFrame) -> pd.DataFrame:
         if all_marketed:
             print(f"[PHASE] Fetching approval dates for {len(all_marketed)} marketed drug(s)...")
 
-            def _run_sync(coro):
-                try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_closed():
-                        raise RuntimeError
-                    return loop.run_until_complete(coro)
-                except RuntimeError:
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    return loop.run_until_complete(coro)
-
-            approval_map = _run_sync(_fetch_approval_for_molecules(sorted(all_marketed)))
+            approval_map = await _fetch_approval_for_molecules(sorted(all_marketed))
             result["Approval Date"] = ""
 
             marketed_rows = []
@@ -732,21 +585,6 @@ def _process_phase_input(clinical_df: pd.DataFrame) -> pd.DataFrame:
             result["Approval Date"] = ""
     else:
         result["Approval Date"] = ""
-
-    # Filter to GCS drugs
-    if _GCS_DRUG_LIST_AVAILABLE and _list_gcs_drug_names_fn:
-        gcs_drugs = _list_gcs_drug_names_fn()
-        if gcs_drugs:
-            gcs_norm = {d.strip().lower().replace(" ", "").replace("-", "").replace("_", "") for d in gcs_drugs}
-            def _in_gcs(mol):
-                canonical = _canonicalise_drug(str(mol))
-                norm = canonical.lower().replace(" ", "").replace("-", "").replace("_", "")
-                if norm in gcs_norm:
-                    return True
-                return str(mol).strip().lower().replace(" ", "").replace("-", "").replace("_", "") in gcs_norm
-            before = len(result)
-            result = result[result[mol_col].apply(_in_gcs)].reset_index(drop=True)
-            print(f"[PHASE] GCS filter: {before} → {len(result)} rows ({result[mol_col].nunique()} drugs)")
 
     # Sort
     _phase_order = {"Preclinical": 0, "Phase 1": 1, "Phase 2": 2, "Phase 3": 3, "Pre-registration": 4, "Marketed": 5}
@@ -937,7 +775,7 @@ Examples: "Novo Nordisk", "Eli Lilly", "AstraZeneca"
         return "Unknown"
 
 
-async def step1_ip_landscape(drug_filter: Optional[set] = None) -> pd.DataFrame:
+async def step1_ip_landscape(drug_filter: Optional[set] = None, loe_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """
     Step 1: IP Landscape of All Drugs.
 
@@ -952,12 +790,11 @@ async def step1_ip_landscape(drug_filter: Optional[set] = None) -> pd.DataFrame:
             loe_table are processed. Used by the orchestrator to shard
             step3 across Cloud Run tasks.
     """
-    df = load_loe_table()
+    df = loe_df if loe_df is not None else load_loe_table(drug_filter)
     if df.empty:
         return pd.DataFrame()
 
     all_drugs = sorted(df["Drug Name"].dropna().unique().tolist())
-    all_drugs = glp1_universe.filter_allowed_drugs(all_drugs)
 
     if drug_filter:
         wanted = {d.strip().lower() for d in drug_filter if d and str(d).strip()}
@@ -1029,14 +866,13 @@ async def step1_ip_landscape(drug_filter: Optional[set] = None) -> pd.DataFrame:
 # ─────────────────────────────────────────────
 
 
-def _get_patent_text_from_chroma(drug_name: str, patent_filename: str) -> str:
-    """Fetches full patent text from ChromaDB for a given drug + filename."""
+def _get_patent_text(drug_name: str, patent_filename: str) -> str:
+    """Fetches the full patent text (its AlloyDB chunks) for a given drug + filename."""
     try:
-        collection = get_or_create_collection(drug_name)
-        chunks     = get_all_chunks(collection, patent_filename)
+        chunks = _query_collection(get_or_create_collection(drug_name), (patent_filename or "").strip())
         return "\n\n".join(chunks) if chunks else ""
     except Exception as e:
-        print(f"[STEP 2] ChromaDB fetch failed for {patent_filename}: {e}")
+        print(f"[STEP 2] AlloyDB fetch failed for {patent_filename}: {e}")
         return ""
 
 
@@ -1048,10 +884,10 @@ async def _analyse_patent_full(
     known_patents:  List[Dict],
 ) -> Dict:
     """
-    Sends full patent text (from ChromaDB) + context to Gemini.
+    Sends full patent text (from AlloyDB) + context to Gemini.
     Returns: layer, category, description, parent_patent_number.
     """
-    patent_text = _get_patent_text_from_chroma(drug_name, patent_filename)
+    patent_text = _get_patent_text(drug_name, patent_filename)
 
     if known_patents:
         known_block = "\n".join(
@@ -1164,7 +1000,7 @@ Respond ONLY with valid JSON, no markdown:
         }
 
 
-async def step2_patent_layering(drug_filter: Optional[set] = None) -> pd.DataFrame:
+async def step2_patent_layering(drug_filter: Optional[set] = None, loe_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """
     Step 2: Patent Layering Pattern with ChromaDB + LLM branching.
 
@@ -1183,12 +1019,11 @@ async def step2_patent_layering(drug_filter: Optional[set] = None) -> pd.DataFra
         Category | Patent Number | Filing Date | Phase at Filing |
         Duration from Parent | Approval Date | Description | Insights
     """
-    df = load_loe_table()
+    df = loe_df if loe_df is not None else load_loe_table(drug_filter)
     if df.empty:
         return pd.DataFrame()
 
     all_drugs = sorted(df["Drug Name"].dropna().unique().tolist())
-    all_drugs = glp1_universe.filter_allowed_drugs(all_drugs)
 
     if drug_filter:
         wanted = {d.strip().lower() for d in drug_filter if d and str(d).strip()}
@@ -1426,8 +1261,16 @@ async def step3_build_phase_timelines(drug_names: List[str]) -> Dict[str, List]:
     if _DRUG_ALIASES:
         print(f"[STEP 3 ALIASES] Built {len(_DRUG_ALIASES)} drug alias(es): {_DRUG_ALIASES}")
 
-    # Process phase input: normalise, calculate Phase 1/2, fetch approvals, GCS filter
-    phase_df = _process_phase_input(clinical_df)
+    # Only the requested drugs (and their aliases) are processed - approvals are fetched per marketed drug
+    wanted = {d.strip().lower() for d in drug_names}
+    clinical_df = clinical_df[clinical_df["Molecule"].map(
+        lambda m: str(m).strip().lower() in wanted or _canonicalise_drug(str(m)).lower() in wanted)]
+    if clinical_df.empty:
+        print(f"[STEP 3] No clinical data for {sorted(wanted)}.")
+        return {}
+
+    # Process phase input: normalise, calculate Phase 1/2, fetch approvals
+    phase_df = await _process_phase_input(clinical_df)
     if phase_df.empty:
         return {}
 
@@ -2061,15 +1904,14 @@ def print_step3(df: pd.DataFrame) -> None:
 
 OUTPUT_DIR        = None  # No longer used — output goes to GCS
 OUTPUT_FILE       = None
-_FORECAST_S3_BQ   = "cognito-prod-394707.cognito_prod_datamart.forecast_s3"
+_FORECAST_S3_BQ   = config.BQ_FORECAST_S3_TABLE
 
 
 def _save_excel(df: pd.DataFrame, path: str, sheet_name: str) -> None:
     """Write an Excel file to GCS instead of local disk."""
     try:
-        import sys, io
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-        from cog import gcs_cache
+        import io
+        gcs_cache = gcp_utils
 
         filename = Path(path).name
         buf = io.BytesIO()

@@ -41,17 +41,9 @@ except ImportError:
 
 load_dotenv(override=True)
 
-# ── Make local modules importable ─────────────────────────────────────────────
-_here   = Path(__file__).resolve().parent
-_parent = _here.parent
-_pkg    = _here.name
-
-# _parent.parent holds the IP_refactored package (for the shared gemini_utils).
-for _p in [str(_here), str(_parent), str(_parent.parent)]:
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
-
-from IP_refactored.gemini_utils import gemini_generate_async
+from .. import config, gcp_utils
+from ..drug_list import GLP1_DRUG_QUERY
+from ..gemini_utils import gemini_generate_async
 
 
 # ─────────────────────────────────────────────
@@ -63,47 +55,26 @@ _GEMINI_MODEL = "gemini-2.5-flash"
 _CURRENT_YEAR  = datetime.now().year
 _CURRENT_DATE  = datetime.now().strftime("%Y-%m-%d")
 
-from cog import drug_filter
-
 BQ_PROJECT_ID      = os.getenv("BQ_PROJECT_ID", "cognito-prod-394707")
 BQ_DATASET_ID      = os.getenv("BQ_DATASET_ID", "cognito_prod_datamart")
 BQ_TABLE_NAME      = os.getenv("BQ_TABLE_NAME")         # drug-company mapping table
 BQ_SERVICE_ACCOUNT = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 
 # ── Input BQ tables ──────────────────────────────────────────────────────────
-BQ_FORECAST_S3_TABLE       = os.getenv("BQ_FORECAST_S3_TABLE",
-    "cognito-prod-394707.cognito_prod_datamart.forecast_s3")
-BQ_FILING_PATTERN_TABLE    = os.getenv("BQ_FILING_PATTERN_TABLE",
-    "cognito-prod-394707.cognito_prod_datamart.filing_pattern_table")
-BQ_COMPANY_ANALYSIS_TABLE  = os.getenv("BQ_COMPANY_ANALYSIS_TABLE",
-    "cognito-prod-394707.cognito_prod_datamart.company_analysis_table")
+BQ_FORECAST_S3_TABLE       = config.BQ_FORECAST_S3_TABLE
+BQ_FILING_PATTERN_TABLE    = config.BQ_FILING_PATTERN_TABLE
+BQ_COMPANY_ANALYSIS_TABLE  = config.BQ_COMPANY_ANALYSIS_TABLE
 
 # ── Output BQ table ─────────────────────────────────────────────────────────
-BQ_OUTPUT_TABLE = os.getenv("BQ_OUTPUT_TABLE",
-    f"{BQ_PROJECT_ID}.{BQ_DATASET_ID}.forecasted_loe")
+BQ_OUTPUT_TABLE = config.FORECASTED_LOE_TABLE
 
 
 # ─────────────────────────────────────────────
 # BigQuery client helper
 # ─────────────────────────────────────────────
 
-_bq_client = None
-
 def _get_bq_client():
-    global _bq_client
-    if _bq_client is not None:
-        return _bq_client
-
-    from google.cloud import bigquery
-    from google.oauth2 import service_account
-
-    if BQ_SERVICE_ACCOUNT and os.path.exists(BQ_SERVICE_ACCOUNT):
-        credentials = service_account.Credentials.from_service_account_file(BQ_SERVICE_ACCOUNT)
-        _bq_client = bigquery.Client(credentials=credentials, project=BQ_PROJECT_ID)
-    else:
-        _bq_client = bigquery.Client(project=BQ_PROJECT_ID)
-
-    return _bq_client
+    return gcp_utils.get_bq_client()
 
 
 # ─────────────────────────────────────────────
@@ -123,9 +94,8 @@ def _load_drug_company_map() -> Dict[str, Dict]:
         client = _get_bq_client()
         fq_table = f"{BQ_PROJECT_ID}.{BQ_DATASET_ID}.{BQ_TABLE_NAME}"
 
-        # Same GLP-1 drug universe as the rest of the pipeline (cog/drug_filter.py)
-        # — previously missing the antagonist exclusion present in the canonical query.
-        _glp1_where = drug_filter.get_glp1_query().strip().split("WHERE", 1)[1]
+        # Same GLP-1 drug universe as the rest of the pipeline (drug_list.GLP1_DRUG_QUERY)
+        _glp1_where = GLP1_DRUG_QUERY.strip().split("WHERE", 1)[1]
         query = f"""
         WITH base AS (
           SELECT DISTINCT
@@ -754,6 +724,13 @@ def _score_forecast(drug_name: str, forecast: Dict) -> List[Dict]:
 # Generate patent forecast for a drug (Gemini)
 # ─────────────────────────────────────────────
 
+_DISPLAY_COLUMNS = {
+    "patent_number": "Patent Number", "category": "Category", "layer": "Layer", "filing_date": "Filing Date",
+    "phase_at_filing": "Phase at Filing", "description": "Description", "jurisdiction": "Jurisdiction",
+    "insights": "Insights",
+}
+
+
 async def _generate_drug_forecast(
     drug_name: str,
     company_name: str,
@@ -762,6 +739,10 @@ async def _generate_drug_forecast(
     company_analysis: str,
 ) -> Dict:
     """Uses Gemini to synthesise all inputs and produce a patent filing forecast."""
+    # forecast_s3 is stored in snake_case; the summary below reads the display names
+    if patent_data is not None:
+        patent_data = patent_data.rename(columns=_DISPLAY_COLUMNS)
+
     # Build patent summary from Step 2/3 data
     patent_summary_lines = []
     if patent_data is not None and not patent_data.empty:
@@ -971,6 +952,51 @@ def _write_to_bq(all_scored: List[Dict], table_id: str = None):
 # Main runner
 # ─────────────────────────────────────────────
 
+async def forecast_and_score_drug(
+    drug_name: str,
+    company_name: str,
+    patent_df: Optional[pd.DataFrame],
+    innovator_patterns: str,
+    company_analysis: str,
+) -> Tuple[List[Dict], Optional[str]]:
+    """Generate one drug's patent forecast with Gemini and score it.
+    Returns (scored forecasted_loe rows, None), or ([], the error) if the forecast or scoring fails."""
+    print(f"\n  Generating patent forecast...")
+    try:
+        forecast = await _generate_drug_forecast(
+            drug_name=drug_name,
+            company_name=company_name,
+            patent_data=patent_df,
+            innovator_patterns=innovator_patterns,
+            company_analysis=company_analysis,
+        )
+        if not forecast or "error" in forecast:
+            err = (forecast or {}).get("error", "No data")
+            print(f"  Forecast failed: {err}")
+            return [], err
+
+        print(f"\n  Global Phase: {forecast.get('current_phase', '?')}")
+        print(f"  Class: {forecast.get('drug_class', '?')}")
+        print(f"  Forecasted patents: {len(forecast.get('forecast', []))}")
+        for entry in forecast.get("forecast", [])[:5]:
+            print(f"    • [{entry.get('likelihood','?')}] {entry.get('patent_type','?')} "
+                  f"[{entry.get('jurisdiction','')}] ({entry.get('filing_window','')}) "
+                  f"~{entry.get('estimated_patents', '?')} patents")
+        if len(forecast.get("forecast", [])) > 5:
+            print(f"    ... and {len(forecast['forecast']) - 5} more entries")
+
+        print(f"\n  Scoring forecast...")
+        scored = _score_forecast(drug_name, forecast)
+        if not scored:
+            print(f"  No scoreable entries")
+            return [], "No scoreable entries"
+        return scored, None
+
+    except Exception as e:
+        print(f"  [ERROR] {drug_name}: {e}")
+        return [], str(e)
+
+
 async def run_pipeline(drug_names: List[str]):
     """Runs the full forecast + scoring pipeline for all specified drugs."""
 
@@ -1094,47 +1120,14 @@ async def run_pipeline(drug_names: List[str]):
             print(f"  Step 5 missing — searching web...")
             company_analysis = await _search_company_analysis(company_name, drug_name)
 
-        # ── Generate forecast ────────────────────────────────────────────────
-        print(f"\n  Generating patent forecast...")
-        try:
-            forecast = await _generate_drug_forecast(
-                drug_name=drug_name,
-                company_name=company_name,
-                patent_data=patent_df,
-                innovator_patterns=innovator_patterns,
-                company_analysis=company_analysis,
-            )
-
-            if forecast and "error" not in forecast:
-                # Print forecast summary
-                print(f"\n  Global Phase: {forecast.get('current_phase', '?')}")
-                print(f"  Class: {forecast.get('drug_class', '?')}")
-                print(f"  Forecasted patents: {len(forecast.get('forecast', []))}")
-                for entry in forecast.get("forecast", [])[:5]:
-                    print(f"    • [{entry.get('likelihood','?')}] {entry.get('patent_type','?')} "
-                          f"[{entry.get('jurisdiction','')}] ({entry.get('filing_window','')}) "
-                          f"~{entry.get('estimated_patents', '?')} patents")
-                if len(forecast.get("forecast", [])) > 5:
-                    print(f"    ... and {len(forecast['forecast']) - 5} more entries")
-
-                # ── Score the forecast ───────────────────────────────────────
-                print(f"\n  Scoring forecast...")
-                scored = _score_forecast(drug_name, forecast)
-
-                if scored:
-                    all_scored.extend(scored)
-                    succeeded += 1
-                else:
-                    print(f"  No scoreable entries")
-                    failed.append((drug_name, "No scoreable entries"))
-            else:
-                err = forecast.get("error", "No data")
-                print(f"  Forecast failed: {err}")
-                failed.append((drug_name, err))
-
-        except Exception as e:
-            print(f"  [ERROR] {drug_name}: {e}")
-            failed.append((drug_name, str(e)))
+        # ── Generate forecast and score it ───────────────────────────────────
+        scored, error = await forecast_and_score_drug(
+            drug_name, company_name, patent_df, innovator_patterns, company_analysis)
+        if error:
+            failed.append((drug_name, error))
+        else:
+            all_scored.extend(scored)
+            succeeded += 1
 
     # ── Write all scored results to BigQuery ─────────────────────────────────
     if all_scored:
@@ -1224,14 +1217,6 @@ if __name__ == "__main__":
     if args.limit:
         drugs = drugs[:args.limit]
         print(f"\n[LIMIT] First {args.limit} drug(s) only")
-
-    # Defense-in-depth: confirm every drug is in the GLP-1 universe before
-    # spending any Gemini calls on it (run_all.py already filters upstream,
-    # but this script can also be invoked standalone).
-    drugs = drug_filter.filter_allowed_drugs(drugs)
-    if not drugs:
-        print("No GLP-1 drugs remain after applying the drug-universe filter.")
-        sys.exit(1)
 
     if args.dry_run:
         print(f"\n[DRY RUN] Would process {len(drugs)} drug(s):")

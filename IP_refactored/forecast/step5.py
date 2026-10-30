@@ -47,14 +47,9 @@ from google.oauth2 import service_account
 
 load_dotenv(override=True)
 
-# ── Drug universe filter (GLP-1 agonists only) ─────────────────────────────────
-# parent = the dir holding cog/; parent.parent = the dir holding the IP_refactored package.
-_parent = Path(__file__).resolve().parent.parent
-for _p in (str(_parent), str(_parent.parent)):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
-from cog import drug_filter
-from IP_refactored.gemini_utils import gemini_generate
+from .. import config, gcp_utils
+from ..drug_list import GLP1_DRUG_QUERY
+from ..gemini_utils import gemini_generate
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Config — edit these or set via environment variables
@@ -79,27 +74,13 @@ _HTTP_DELAY = 0.5   # SEC EDGAR polite rate-limit
 # Credentials + client initialisation
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _build_credentials():
-    """Get credentials: use service account file if available, else default (Cloud Run)."""
-    if CREDENTIALS_PATH and Path(CREDENTIALS_PATH).exists():
-        creds = service_account.Credentials.from_service_account_file(CREDENTIALS_PATH)
-        print(f"[AUTH] Using service account: {CREDENTIALS_PATH}")
-        return creds
-    print("[AUTH] Using application default credentials (Cloud Run)")
-    return None   # google-auth will fall back to ADC
+class _LazyBQClient:
+    """The shared BigQuery client, created on first use so importing this module needs no credentials."""
+    def __getattr__(self, name):
+        return getattr(gcp_utils.get_bq_client(), name)
 
 
-_credentials = _build_credentials()
-
-# BigQuery client
-_bq_client = bigquery.Client(
-    project     = BQ_PROJECT_ID,
-    location    = BQ_LOCATION,
-    credentials = _credentials,
-)
-
-print(f"[INIT] Gemini model : {GEMINI_MODEL}")
-print(f"[INIT] BQ target    : {BQ_PROJECT_ID}.{BQ_DATASET_ID}.{BQ_TABLE_ID}")
+_bq_client = _LazyBQClient()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -176,7 +157,7 @@ _BQ_SCHEMA = [
 
 def _ensure_bq_table() -> str:
     """Create BQ table if it doesn't exist. Returns fully-qualified table ID."""
-    fq = f"{BQ_PROJECT_ID}.{BQ_DATASET_ID}.{BQ_TABLE_ID}"
+    fq = config.BQ_COMPANY_ANALYSIS_TABLE
     try:
         _bq_client.get_table(fq)
         print(f"[BQ] Table exists: {fq}")
@@ -931,8 +912,7 @@ def export_to_excel(assessment: Dict, output_path: str) -> Optional[str]:
         import openpyxl
         import io as _io
 
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-        from cog import gcs_cache
+        gcs_cache = gcp_utils
 
         df = pd.DataFrame(rows)
         buf = _io.BytesIO()
@@ -965,13 +945,10 @@ def export_to_excel(assessment: Dict, output_path: str) -> Optional[str]:
 
 def _fetch_all_companies(therapy: str = "GLP-1") -> List[str]:
     src_table = f"{BQ_PROJECT_ID}.{BQ_DATASET_ID}.{os.getenv('BQ_SOURCE_TABLE', 'patent_pipeline')}"
-    # Companies are scoped to the same GLP-1 drug universe as the rest of the
-    # pipeline (cog/drug_filter.py) — this was previously a near-duplicate
-    # query missing the antagonist exclusion; now there's one definition.
-    glp1_filter = drug_filter.get_glp1_query().strip()
-    # get_glp1_query() returns a full SELECT; we only need its WHERE clause
-    # here since this query selects Parent_Company_Name, not cleaned_generic_name.
-    where_clause = glp1_filter.split("WHERE", 1)[1]
+    # Companies are scoped to the same GLP-1 drug universe as the rest of the pipeline
+    # (drug_list.GLP1_DRUG_QUERY); only its WHERE clause is needed here since this query
+    # selects Parent_Company_Name, not cleaned_generic_name.
+    where_clause = GLP1_DRUG_QUERY.strip().split("WHERE", 1)[1]
     query = f"""
     SELECT DISTINCT Parent_Company_Name
     FROM `{src_table}`

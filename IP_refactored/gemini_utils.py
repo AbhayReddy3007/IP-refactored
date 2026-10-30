@@ -16,10 +16,12 @@ same retry / flex->standard fallback and is counted in the per-run usage stats
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import threading
 import time
+from contextlib import contextmanager
 from functools import lru_cache
 
 from google import genai
@@ -51,6 +53,20 @@ def reset_gemini_call_stats() -> None:
     """Reset usage counters before a new dimension-molecule run."""
     with _stats_lock:
         gemini_call_stats.clear()
+
+
+@contextmanager
+def isolated_gemini_call_stats():
+    """Run a nested dimension (which resets and saves the counters itself) without losing the
+    counters of the dimension that called it: they are restored on exit."""
+    with _stats_lock:
+        saved = copy.deepcopy(gemini_call_stats)
+    try:
+        yield
+    finally:
+        with _stats_lock:
+            gemini_call_stats.clear()
+            gemini_call_stats.update(saved)
 
 
 def get_gemini_call_stats() -> list[dict[str, object]]:
