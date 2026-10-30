@@ -10,7 +10,7 @@ through the IP dimensions selected by config.IP_DIMENSION (default: all):
     patent_strength()                   glp_master_loe -> legal-robustness scores -> patent strength tables
     patent_thicket_and_circumvention()  glp_master_loe -> thicket score + design-around strategies -> its tables
     global_launch_sequencing_and_geographic_arbitrage()  glp_master_loe -> expiry per jurisdiction, launch order, arbitrage score -> its tables
-    litigation_analysis()               glp_master_loe -> patent litigation and court cases per patent -> its table
+    litigation_analysis()               patent_master -> patent litigation and court cases per patent -> its table
 
 Usage:
     python -m IP_pillar.run_ip_dimension --drug Semaglutide
@@ -105,7 +105,7 @@ def get_dimension() -> str:
 
 async def run_drug(drug_name: str, reindex: bool = False) -> dict:
     """Run the dimension(s) selected by config.IP_DIMENSION for one drug.
-    patent_strength, patent_thicket_and_circumvention, global_launch_sequencing_and_geographic_arbitrage and litigations read the glp_master_loe rows
+    patent_strength, patent_thicket_and_circumvention and global_launch_sequencing_and_geographic_arbitrage read the glp_master_loe rows
     primary_market_entry_horizon writes, so with "all" they run after it and are skipped
     when the horizon run fails. A failure in one of them does not stop the other."""
     dimension = get_dimension()

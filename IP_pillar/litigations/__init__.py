@@ -2,8 +2,8 @@
 litigations
 ───────────
 IP dimension 5: the patent litigation and court cases found for a drug's patents (ANDA Paragraph IV, IPR at PTAB,
-EPO oppositions, India, compounding-pharmacy suits). Reads glp_master_loe (the output of
-primary_market_entry_horizon) and writes the litigation table.
+EPO oppositions, India, compounding-pharmacy suits). Reads patent_master (patents with confidence above
+the threshold) and writes the litigation table.
 
     litigation_analysis.py   litigation_analysis(drug) — the whole pipeline for one drug
     bq_utils.py              the litigation table: earlier rows read, this run's rows merged in and written
@@ -11,8 +11,7 @@ primary_market_entry_horizon) and writes the litigation table.
     constants.py             search sizes, temperatures and the case types
 
     retrieval/   what goes in
-        patents.py          the drug's real patent numbers (glp_master_loe, approved patents only) and their
-                            filing dates (glp_patent_loe)
+        patents.py          the drug's patent numbers and filing dates (patent_master, confidence > threshold)
         marketed.py         whether the drug is Marketed (brand names are looked up only then)
     search/      how the cases are found
         steps.py            innovator and brand names, then the grouped litigation search (Gemini + Google Search)

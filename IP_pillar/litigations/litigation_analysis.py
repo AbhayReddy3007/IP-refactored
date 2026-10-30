@@ -6,9 +6,9 @@ found for its patents.
 
     litigation_analysis(drug_name)   — async; runs every step below end to end
 
-    1. Load the drug's glp_master_loe rows, approved patents only, and take its real (non-forecasted)
-       patent numbers; the patents already in the litigation table are skipped, so a patent is never
-       searched twice                                                   (master_loe, retrieval, bq_utils)
+    1. Load the drug's patent numbers and filing dates from patent_master (confidence above the threshold); the patents
+       already in the litigation table are skipped, so a patent is never searched twice
+                                                                        (retrieval, bq_utils)
     2. Innovator, and the brand names too when the drug is Marketed, with Gemini + Google Search
                                                                          (retrieval.is_marketed_drug, search)
     3. Litigation search per group of patents, with Gemini + Google Search: ANDA Paragraph IV, IPR at
@@ -16,11 +16,11 @@ found for its patents.
        cannot be parsed is split and searched again                     (search.search_litigations)
     4. Case types normalised, duplicates dropped, cases grouped and summarised   (search)
     5. The litigation table -> BigQuery: the earlier rows plus this run's, with each patent's filing date
-       from glp_patent_loe; the drug's older rows are replaced              (bq_utils)
+       from patent_master; the drug's older rows are replaced               (bq_utils)
     6. PDF report built from the drug's rows, uploaded to GCS on every run, also when every patent was
        already in the table                                                 (generate_report)
 
-Input is glp_master_loe, so run primary_market_entry_horizon for the drug first.
+Input is patent_master only; it does not depend on primary_market_entry_horizon.
 
 Usage:
     from IP_pillar.litigations import litigation_analysis
@@ -34,13 +34,12 @@ import time
 from datetime import date
 
 from .. import config
-from ..bq_utils import load_patent_loe, save_gemini_stats
+from ..bq_utils import save_gemini_stats
 from ..drug_list import resolve_drug_name
 from ..gemini_utils import reset_gemini_call_stats
-from ..master_loe import load_master_data
 from ..utils import normalize_patent_number
 from .bq_utils import build_rows, load_existing_rows, merge_case_rows, write_litigation
-from .retrieval import get_filing_dates, get_patent_numbers, is_marketed_drug
+from .retrieval import get_patents, is_marketed_drug
 from .search import (
     build_summary,
     deduplicate_litigations,
@@ -85,7 +84,7 @@ async def litigation_analysis(drug_name: str, reset: bool = False) -> dict:
          "unique_challengers", "failed_patents", "processing_time_seconds", "output_tables": [...],
          "report": {"gcs_uri", "archive_uri"} or {"error"}}
         (plus "innovator", "brand_names" and "summary" when patents were searched)
-        or {"drug_name", "error", ...} if the drug has no glp_master_loe rows.
+        or {"drug_name", "error", ...} if the drug has no patent_master rows above the confidence threshold.
     """
     reset_gemini_call_stats()
     t0 = time.time()
@@ -106,12 +105,12 @@ async def litigation_analysis(drug_name: str, reset: bool = False) -> dict:
 async def _run(drug: str, t0: float) -> dict:
     logger.info("%s\n[LITIGATION] Starting for: %s\n%s", "=" * 60, drug, "=" * 60)
 
-    # Step 1: glp_master_loe -> the drug's patents that are not in the litigation table yet
-    master = await asyncio.to_thread(load_master_data, drug)
-    if master.empty:
+    # Step 1: patent_master -> the drug's patents that are not in the litigation table yet
+    patents, filing_dates = await asyncio.to_thread(get_patents, drug)
+    if not patents:
         return {"drug_name": drug,
-                "error": f"No rows for '{drug}' in {config.BQ_MASTER_LOE_TABLE} — run primary_market_entry_horizon first."}
-    patents = get_patent_numbers(master)
+                "error": f"No patents for '{drug}' in {config.PATENT_MASTER_TABLE} "
+                         f"with confidence > {config.PATENT_CONFIDENCE_THRESHOLD}."}
     existing = await asyncio.to_thread(load_existing_rows, drug)
     searched_before = {normalize_patent_number(row["patent_number"]) for row in existing if row.get("patent_number")}
     pending = [p for p in patents if normalize_patent_number(p) not in searched_before]
@@ -142,11 +141,10 @@ async def _run(drug: str, t0: float) -> dict:
     challengers = unique_challengers(all_cases)
 
     # Step 5: BigQuery
-    patent_loe = await asyncio.to_thread(load_patent_loe, drug)
     elapsed = round(time.time() - t0, 1)
     summary = build_summary(all_cases, cases_by_type)
     rows = build_rows(drug, case_rows, summary, innovator, brand_names,
-                      get_filing_dates(patent_loe), date.today().isoformat(), elapsed)
+                      filing_dates, date.today().isoformat(), elapsed)
     rows_written = await asyncio.to_thread(write_litigation, drug, rows)
 
     # Step 6: the dimension's PDF report, from the drug's rows. A failed report is recorded in the result but

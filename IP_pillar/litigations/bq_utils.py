@@ -36,7 +36,7 @@ LITIGATION_SCHEMA = [
     SchemaField("innovator", "STRING"),
     SchemaField("brand_names", "STRING"),            # JSON array as text; only looked up for a Marketed drug
     SchemaField("patent_number", "STRING"),
-    SchemaField("filing_date", "STRING"),            # the patent's, from glp_patent_loe
+    SchemaField("filing_date", "STRING"),            # the patent's, from patent_master
     SchemaField("case_type", "STRING"),
     SchemaField("challenger", "STRING"),
     SchemaField("case_number", "STRING"),

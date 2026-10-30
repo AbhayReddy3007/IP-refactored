@@ -262,7 +262,7 @@ RUN_FORECAST = os.getenv("RUN_FORECAST", "true").strip().lower() not in ("0", "f
 #   patent_strength                  — only that dimension (needs the drug's glp_master_loe rows)
 #   patent_thicket_and_circumvention — only that dimension (needs the drug's glp_master_loe rows)
 #   global_launch_sequencing_and_geographic_arbitrage — only that dimension (needs the drug's glp_master_loe rows)
-#   litigations                      — only that dimension (needs the drug's glp_master_loe rows)
+#   litigations                      — only that dimension (reads patent_master)
 IP_DIMENSION = os.getenv("IP_DIMENSION", "litigations").strip().lower()
 
 # Rationale of a drug that has no patents for a dimension to assess (patent_strength, patent_thicket_and_circumvention).
