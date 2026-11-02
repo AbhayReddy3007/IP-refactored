@@ -16,7 +16,7 @@ import logging
 from pathlib import Path
 from typing import Dict, Optional
 
-from .. import gcp_helpers
+from ... import gcp_helpers
 from .step3_scientific_barrier import _cap_evidence
 
 logger = logging.getLogger(__name__)

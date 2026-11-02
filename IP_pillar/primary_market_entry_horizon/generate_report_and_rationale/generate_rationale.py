@@ -21,8 +21,7 @@ from typing import Dict, Optional
 
 import pandas as pd
 
-from ... import config
-from ...utils import ip_dimension_score, is_blank, year_from_value
+from ...utils import PATENT_TERM_YEARS, ip_dimension_score, is_blank, year_from_value
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +165,7 @@ def find_controlling(blocking_df: pd.DataFrame):
             if is_blank(row.get(EXPIRY_COL)) or to_number(row.get(EXPIRY_COL)) is None:
                 filing_year = extract_year(row.get("Filing Date"))
                 if filing_year:
-                    tmp.at[idx, EXPIRY_COL] = filing_year + config.PATENT_TERM_YEARS
+                    tmp.at[idx, EXPIRY_COL] = filing_year + PATENT_TERM_YEARS
 
         tmp["_expiry_num"] = tmp[EXPIRY_COL].apply(to_number)
         with_expiry = tmp[tmp["_expiry_num"].notna()]
@@ -188,7 +187,7 @@ def _derive_years_to_entry(ctrl, blocking_df: pd.DataFrame, current_year: int) -
             return expiry - current_year
         filing_year = extract_year(cell(ctrl, "Filing Date"))
         if filing_year:
-            return (filing_year + config.PATENT_TERM_YEARS) - current_year
+            return (filing_year + PATENT_TERM_YEARS) - current_year
 
     if blocking_df is not None and not blocking_df.empty and "Type" in blocking_df.columns:
         fc = blocking_df[_is_forecasted_type(blocking_df)]
@@ -196,10 +195,10 @@ def _derive_years_to_entry(ctrl, blocking_df: pd.DataFrame, current_year: int) -
             for _, row in fc.iterrows():
                 filing_year = extract_year(cell(row, "Filing Date"))
                 if filing_year:
-                    return (filing_year + config.PATENT_TERM_YEARS) - current_year
+                    return (filing_year + PATENT_TERM_YEARS) - current_year
             fc_count = fc[FORECASTED_COL].apply(to_number).dropna().sum() if FORECASTED_COL in fc.columns else 0
             if fc_count > 0:
-                return config.PATENT_TERM_YEARS   # forecasted but undated: assume filed this year
+                return PATENT_TERM_YEARS   # forecasted but undated: assume filed this year
     return None
 
 

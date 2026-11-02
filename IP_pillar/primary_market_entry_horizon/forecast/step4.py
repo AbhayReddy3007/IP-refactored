@@ -21,7 +21,7 @@ from google.cloud import bigquery
 
 load_dotenv(override=True)
 
-from .. import config, gcp_utils
+from ... import config, gcp_utils
 
 # ✅ CONFIG
 MAX_CONCURRENT_DRUGS = 3
@@ -34,8 +34,8 @@ BQ_LOCATION = "asia-south1"
 
 OUTPUT_DIR = None  # No longer used — output goes to GCS
 
-from ..drug_list import list_glp1_patent_files
-from ..gemini_utils import gemini_generate_async
+from ...drug_list import list_glp1_patent_files
+from ...gemini_utils import gemini_generate_async
 
 _STEP4_SUBFOLDER = "innovator_patterns"
 

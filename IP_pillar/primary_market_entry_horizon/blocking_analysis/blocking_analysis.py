@@ -27,12 +27,12 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .. import config
-from .. import gcp_utils
-# Shared chunking utilities — reused instead of reimplemented here.
-from ..chunking.dates import get_dates_with_pdf_fallback
-from ..chunking.indexer import generate_embeddings
-from ..utils import extract_jurisdiction
+from ... import config
+from ... import gcp_utils
+# Shared date utilities — reused instead of reimplemented here.
+from ...dates import get_dates_with_pdf_fallback
+from ...indexer import generate_embeddings
+from ...utils import extract_jurisdiction
 from .step1_claim_classification import _run_step1
 from .step2_claim_elements import _run_step2, get_drug_rows
 from .step3_scientific_barrier import _run_step3
@@ -594,7 +594,7 @@ async def _run_steps2_plus(
 # Per-patent analysis cache (GCS-backed, via gcp_utils)
 # ─────────────────────────────────────────────
 # Stores completed blocking analysis results per patent as JSON blobs in GCS
-# (not local disk — consistent with chunking/indexer.py's progress tracking,
+# (not local disk — consistent with indexer.py's progress tracking,
 # and survives container restarts / scales across Cloud Run instances) so
 # that re-runs only analyse NEW patents.
 #

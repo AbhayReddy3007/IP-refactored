@@ -12,7 +12,7 @@ Gemini is called through gcp_helpers.call_gemini_json(), shared by Steps 1-5.
 import logging
 from typing import Dict, Optional
 
-from .. import gcp_helpers
+from ... import gcp_helpers
 
 logger = logging.getLogger(__name__)
 

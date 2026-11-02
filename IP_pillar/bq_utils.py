@@ -36,6 +36,43 @@ from .utils import bq_safe_name
 logger = logging.getLogger(__name__)
 
 
+# Canonical output column definitions for glp_master_loe (in output order).
+# Each entry: (canonical_name, [alternative_token_lists]).
+# Each alternative is a list of lowercase tokens that must ALL appear in the
+# normalised column name, or a tuple (required_tokens, exclude_tokens).
+# Columns not found in the merged DataFrame are filled with blank (NA).
+FINAL_COLUMNS: list = [
+    ("Drug Name",                       [["drug"]]),
+    ("Jurisdiction",                    [["jurisdiction"]]),
+    ("Tag",                             [["tag"]]),
+    ("Type",                            [["type"]]),
+    ("Filing Date",                     [["filing", "date"]]),
+    ("Patent Number",                   [["patent", "number"]]),
+    ("No Of Forecasted Patents",        [["noofforecastedpatents"],
+                                          ["numberofforecastedpatents"],
+                                          ["forecastedpatents"],
+                                          ["noofforecasted"]]),
+    ("Years to Entry",                  [(["years", "entry"], ["avg"])]),
+    ("Avg Years to Entry (US & EP)",    [["avgyears", "usep"], ["avgyears"]]),
+    ("IP Dimension 1 Score",            [["ipdimension"]]),
+    ("Step 1 Claim Category",           [["step1claimcategory"], ["step", "claim", "category"]]),
+    ("Grant Date",                      [["grant", "date"]]),
+    ("PTE (months)",                    [["pte"]]),
+    ("Pediatric Exclusivity",           [["pediatric"]]),
+    ("Controlling Patent Expiry Year",  [["controlling", "expiry"]]),
+    ("Exclusivity Year",                [["exclusivity", "year"]]),
+    ("Approval Date",                   [["approval", "date"]]),
+    ("Est. Approval Year",              [["est", "approval", "year"]]),
+    ("Phase",                           [["phase"]]),
+    ("Strategic Purpose",               [["strategic", "purpose"]]),
+    ("Risk Assessment",                 [["risk", "assessment"]]),
+    ("Overall Forecast",                [["overall", "forecast"]]),
+    ("Portfolio Gaps",                  [["portfolio", "gaps"]]),
+    ("Existing Patent Summary",         [["existing", "patent", "summary"]]),
+    ("Reason",                          [["reason"]]),
+]
+
+
 # ─────────────────────────────────────────────
 # Reads — glp_master_loe
 # ─────────────────────────────────────────────
@@ -53,7 +90,7 @@ def load_master_table(drug_names: Optional[List[str]] = None) -> pd.DataFrame:
         ])
     df = gcp_utils.get_bq_client().query(sql, job_config=job_config).to_dataframe()
 
-    friendly = {bq_safe_name(name): name for name, _ in config.FINAL_COLUMNS}
+    friendly = {bq_safe_name(name): name for name, _ in FINAL_COLUMNS}
     df = df.rename(columns={c: friendly.get(c, c) for c in df.columns})
     logger.info("[REPORT] Loaded %d row(s) from %s", len(df), config.BQ_MASTER_LOE_TABLE)
     return df
@@ -70,7 +107,7 @@ def load_master_loe(drug: str) -> pd.DataFrame:
 # Reads — glp_patent_loe
 # ─────────────────────────────────────────────
 
-# glp_patent_loe columns the analyses read, beyond config.FINAL_COLUMNS.
+# glp_patent_loe columns the analyses read, beyond FINAL_COLUMNS.
 _EXTRA_COLUMNS = (
     "Source File", "Approval Date Source",
     "Step 2 Matched Elements", "Step 3 Technical Barrier", "Step 3 Confidence", "Step 3 Evidence Type",
@@ -86,7 +123,7 @@ def load_patent_loe(drug: str) -> pd.DataFrame:
     job_config = bigquery.QueryJobConfig(query_parameters=[bigquery.ScalarQueryParameter("drug", "STRING", drug.strip().lower())])
     df = gcp_utils.get_bq_client().query(sql, job_config=job_config).to_dataframe()
 
-    friendly = {bq_safe_name(name): name for name in [n for n, _ in config.FINAL_COLUMNS] + list(_EXTRA_COLUMNS)}
+    friendly = {bq_safe_name(name): name for name in [n for n, _ in FINAL_COLUMNS] + list(_EXTRA_COLUMNS)}
     df = df.rename(columns={c: friendly.get(c, c) for c in df.columns})
     logger.info("[PATENT_LOE] Loaded %d row(s) for %r from %s", len(df), drug, config.BQ_PATENT_LOE_TABLE)
     return df

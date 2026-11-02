@@ -19,7 +19,7 @@ config.INDEXER_CONCURRENCY. Progress is checkpointed to GCS (via
 gcp_utils) so a crashed run can resume without redoing completed patents.
 
 Usage:
-    from IP_pillar.chunking.indexer import indexer
+    from IP_pillar.indexer import indexer
 
     result = await indexer("Semaglutide")
 """
@@ -38,14 +38,13 @@ from typing import List, Optional
 
 from google.genai import types
 
-from .. import config
-from .. import gcp_utils
-from ..gemini_utils import gemini_embed_async, gemini_generate_async
-from .alloydb_client import alloydb_client
-from ..patent_filter import patent_filter
-from ..utils import safe_name
+from . import config
+from . import gcp_utils
+from .gemini_utils import gemini_embed_async, gemini_generate_async
+from .alloydb_utils import alloydb_client
+from .patent_filter import patent_filter
 from .dates import get_dates_from_alloydb, resolve_dates
-from .utils import chunk_text, clean_date, fmt_elapsed, safe_collection_name
+from .utils import chunk_text, clean_date, fmt_elapsed, safe_collection_name, safe_name
 
 logger = logging.getLogger(__name__)
 
@@ -700,7 +699,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     drug = sys.argv[1] if len(sys.argv) > 1 else None
     if not drug:
-        print("Usage: python -m IP_pillar.chunking.indexer <drug_name> [--reindex]")
+        print("Usage: python -m IP_pillar.indexer <drug_name> [--reindex]")
         sys.exit(1)
     force_reindex = "--reindex" in sys.argv
     out = asyncio.run(indexer(drug, reindex=force_reindex))

@@ -30,9 +30,9 @@ import requests
 from bs4 import BeautifulSoup
 from google.genai import types
 
-from .. import config
-from .. import gcp_helpers
-from ..gemini_utils import gemini_generate_async
+from ... import config
+from ... import gcp_helpers
+from ...gemini_utils import gemini_generate_async
 from .step2_claim_elements import _format_rows_for_prompt
 
 logger = logging.getLogger(__name__)

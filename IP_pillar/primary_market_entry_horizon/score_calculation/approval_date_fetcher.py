@@ -16,6 +16,7 @@ Also handles:
 import logging
 import asyncio
 import json
+import os
 import re
 import time
 from datetime import datetime
@@ -29,6 +30,13 @@ from ... import config
 from ...gemini_utils import gemini_generate
 from ...utils import format_date_dmy
 from ..bq_utils import fetch_brands_df
+
+# HTTP / API tunables
+APPROVAL_HTTP_DELAY           = float(os.getenv("APPROVAL_HTTP_DELAY", "0.7"))
+APPROVAL_HTTP_TIMEOUT         = int(os.getenv("APPROVAL_HTTP_TIMEOUT", "15"))
+APPROVAL_DOMAIN_CHECK_TIMEOUT = float(os.getenv("APPROVAL_DOMAIN_CHECK_TIMEOUT", "3.0"))
+FDA_API_BRAND_SEARCH_LIMIT    = int(os.getenv("FDA_API_BRAND_SEARCH_LIMIT", "10"))
+FDA_API_APPROVAL_SEARCH_LIMIT = int(os.getenv("FDA_API_APPROVAL_SEARCH_LIMIT", "5"))
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +103,7 @@ def _find_date_in_text(text: str) -> Optional[str]:
 
 def _http_get(url: str, **kwargs) -> Optional[requests.Response]:
     try:
-        r = requests.get(url, headers=_HTTP_HEADERS, timeout=config.APPROVAL_HTTP_TIMEOUT, **kwargs)
+        r = requests.get(url, headers=_HTTP_HEADERS, timeout=APPROVAL_HTTP_TIMEOUT, **kwargs)
         r.raise_for_status()
         return r
     except requests.RequestException as e:
@@ -104,12 +112,12 @@ def _http_get(url: str, **kwargs) -> Optional[requests.Response]:
 
 
 def _is_domain_reachable(host: str, port: int = 443, timeout: float = None) -> bool:
-    timeout = timeout if timeout is not None else config.APPROVAL_DOMAIN_CHECK_TIMEOUT
+    timeout = timeout if timeout is not None else APPROVAL_DOMAIN_CHECK_TIMEOUT
     if host in _DOMAIN_REACHABLE_CACHE:
         return _DOMAIN_REACHABLE_CACHE[host]
     import socket
     try:
-        socket.setdefaulttimeout(timeout or config.APPROVAL_DOMAIN_CHECK_TIMEOUT)
+        socket.setdefaulttimeout(timeout or APPROVAL_DOMAIN_CHECK_TIMEOUT)
         socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect((host, port))
         _DOMAIN_REACHABLE_CACHE[host] = True
         logger.info(f"[NETWORK] {host} is reachable")
@@ -127,7 +135,7 @@ def _is_domain_reachable(host: str, port: int = 443, timeout: float = None) -> b
 def _resolve_brands_fda(generic: str) -> List[str]:
     r = _http_get("https://api.fda.gov/drug/drugsfda.json", params={
         "search": f'openfda.generic_name:"{generic}" OR openfda.substance_name:"{generic}"',
-        "limit": config.FDA_API_BRAND_SEARCH_LIMIT,
+        "limit": FDA_API_BRAND_SEARCH_LIMIT,
     })
     if not r:
         return []
@@ -137,7 +145,7 @@ def _resolve_brands_fda(generic: str) -> List[str]:
             if b.upper() not in seen:
                 seen.add(b.upper())
                 brands.append(b)
-    time.sleep(config.APPROVAL_HTTP_DELAY)
+    time.sleep(APPROVAL_HTTP_DELAY)
     return brands
 
 
@@ -162,7 +170,7 @@ def _resolve_brands_ema(generic: str) -> List[str]:
                         brands.append(name)
     if not brands:
         brands.append(generic)
-    time.sleep(config.APPROVAL_HTTP_DELAY)
+    time.sleep(APPROVAL_HTTP_DELAY)
     return brands
 
 
@@ -192,15 +200,15 @@ def fetch_brands_from_bq(drug_name: str) -> Dict[str, List[str]]:
 def _approval_step_a_fda(brand: str) -> Tuple[Optional[str], str]:
     r = _http_get(
         "https://api.fda.gov/drug/drugsfda.json",
-        params={"search": f'openfda.brand_name:"{brand}"', "limit": config.FDA_API_APPROVAL_SEARCH_LIMIT},
+        params={"search": f'openfda.brand_name:"{brand}"', "limit": FDA_API_APPROVAL_SEARCH_LIMIT},
     )
     if not r:
-        time.sleep(config.APPROVAL_HTTP_DELAY)
+        time.sleep(APPROVAL_HTTP_DELAY)
         return None, "FDA: not found"
 
     results = r.json().get("results", [])
     if not results:
-        time.sleep(config.APPROVAL_HTTP_DELAY)
+        time.sleep(APPROVAL_HTTP_DELAY)
         return None, "FDA: not found"
 
     original_approval_dates = []
@@ -219,7 +227,7 @@ def _approval_step_a_fda(brand: str) -> Tuple[Optional[str], str]:
                 if sub.get("submission_status") == "AP" and sub.get("submission_status_date"):
                     original_approval_dates.append(sub["submission_status_date"])
 
-    time.sleep(config.APPROVAL_HTTP_DELAY)
+    time.sleep(APPROVAL_HTTP_DELAY)
     if original_approval_dates:
         earliest = min(original_approval_dates)
         return earliest, "FDA Drugs@FDA API"
@@ -314,7 +322,7 @@ def _approval_step_a_ema(brand: str) -> Tuple[Optional[str], str]:
                 if d:
                     return d, f"EMA EPAR ({epar_url})"
 
-    time.sleep(config.APPROVAL_HTTP_DELAY)
+    time.sleep(APPROVAL_HTTP_DELAY)
     nat_url = (
         "https://www.ema.europa.eu/en/medicines/national-registers-authorised-medicines"
         f"?search_api_fulltext={quote_plus(brand)}"
@@ -430,7 +438,7 @@ def _approval_step_c_news(brand: str, geo: str) -> Tuple[Optional[str], str]:
             d = _scrape_article_for_date(article_url, brand, geo)
             if d:
                 return d, f"{outlet_name} | {article_url}"
-            time.sleep(config.APPROVAL_HTTP_DELAY)
+            time.sleep(APPROVAL_HTTP_DELAY)
     return None, "Step C: not found"
 
 

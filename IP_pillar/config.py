@@ -132,7 +132,7 @@ INDEXER_CONCURRENCY = int(os.getenv("INDEXER_CONCURRENCY", "10"))
 # patents are currently in flight and how long each has been running, so a
 # long run never goes silent even while every patent is still mid-step
 # (e.g. waiting on a slow Gemini call).
-INDEXER_HEARTBEAT_SECONDS = int(os.getenv("INDEXER_HEARTBEAT_SECONDS", "30"))
+INDEXER_HEARTBEAT_SECONDS = int(os.getenv("INDEXER_HEARTBEAT_SECONDS", "120"))
 
 # Cover-page render DPI for Gemini Vision date extraction
 COVER_PAGE_DPI = int(os.getenv("COVER_PAGE_DPI", "300"))
@@ -143,7 +143,7 @@ OCR_MAX_PAGES  = int(os.getenv("OCR_MAX_PAGES", "50"))
 OCR_BATCH_SIZE = int(os.getenv("OCR_BATCH_SIZE", "10"))
 
 # ─────────────────────────────────────────────
-# Blocking analysis (blocking_analysis/)
+# Blocking analysis (primary_market_entry_horizon/blocking_analysis/)
 # ─────────────────────────────────────────────
 
 # Retries for any Gemini JSON-mode call across Steps 1-5
@@ -194,14 +194,14 @@ PATENT_STATUS_FILTER       = os.getenv("PATENT_STATUS_FILTER", "PDF Downloaded")
 PATENT_CONFIDENCE_THRESHOLD = float(os.getenv("PATENT_CONFIDENCE_THRESHOLD", "0.3"))
 
 # ─────────────────────────────────────────────
-# AlloyDB — connection tunables (chunking/alloydb_client.py)
+# AlloyDB — connection tunables (alloydb_utils.py)
 # ─────────────────────────────────────────────
 ALLOYDB_CONNECT_TIMEOUT = int(os.getenv("ALLOYDB_CONNECT_TIMEOUT", "30"))
 ALLOYDB_RETRY_COUNT     = int(os.getenv("ALLOYDB_RETRY_COUNT", "3"))
 ALLOYDB_RETRY_BACKOFF   = float(os.getenv("ALLOYDB_RETRY_BACKOFF", "2.0"))
 
 # ─────────────────────────────────────────────
-# Indexer — Gemini upload + date-extraction tunables (chunking/indexer.py)
+# Indexer — Gemini upload + date-extraction tunables (indexer.py)
 # ─────────────────────────────────────────────
 # How long (seconds) to wait for Gemini to finish processing an uploaded PDF
 # before proceeding anyway.
@@ -209,39 +209,6 @@ GEMINI_UPLOAD_MAX_WAIT_SECONDS = int(os.getenv("GEMINI_UPLOAD_MAX_WAIT_SECONDS",
 # Maximum PDF size (bytes) passed as a raw byte payload for date extraction;
 # larger PDFs are trimmed to the first 2 pages before sending.
 DATE_EXTRACTION_PDF_MAX_BYTES = int(os.getenv("DATE_EXTRACTION_PDF_MAX_BYTES", str(2 * 1024 * 1024)))
-
-# ─────────────────────────────────────────────
-# Primary market entry horizon — exclusivity offsets + score thresholds
-# (primary_market_entry_horizon/score_calculation/patent_scores.py)
-# ─────────────────────────────────────────────
-# Statutory patent term, counted from the filing date (before any PTE).
-PATENT_TERM_YEARS = 20
-
-# Years of market exclusivity added on top of the approval date per jurisdiction.
-EXCLUSIVITY_OFFSET_US      = int(os.getenv("EXCLUSIVITY_OFFSET_US", "5"))
-EXCLUSIVITY_OFFSET_EP      = int(os.getenv("EXCLUSIVITY_OFFSET_EP", "10"))
-EXCLUSIVITY_OFFSET_DEFAULT = int(os.getenv("EXCLUSIVITY_OFFSET_DEFAULT", "8"))
-
-# Avg-years-to-entry breakpoints for the 1–5 IP score:
-#   avg <= SCORE_THRESHOLD_5 → 5   (most blocking)
-#   avg <= SCORE_THRESHOLD_4 → 4
-#   avg <= SCORE_THRESHOLD_3 → 3
-#   avg <= SCORE_THRESHOLD_2 → 2
-#   else                     → 1
-SCORE_THRESHOLD_5 = int(os.getenv("SCORE_THRESHOLD_5", "6"))
-SCORE_THRESHOLD_4 = int(os.getenv("SCORE_THRESHOLD_4", "8"))
-SCORE_THRESHOLD_3 = int(os.getenv("SCORE_THRESHOLD_3", "11"))
-SCORE_THRESHOLD_2 = int(os.getenv("SCORE_THRESHOLD_2", "13"))
-
-# ─────────────────────────────────────────────
-# Approval date fetcher — HTTP / API tunables
-# (primary_market_entry_horizon/score_calculation/approval_date_fetcher.py)
-# ─────────────────────────────────────────────
-APPROVAL_HTTP_DELAY           = float(os.getenv("APPROVAL_HTTP_DELAY", "0.7"))
-APPROVAL_HTTP_TIMEOUT         = int(os.getenv("APPROVAL_HTTP_TIMEOUT", "15"))
-APPROVAL_DOMAIN_CHECK_TIMEOUT = float(os.getenv("APPROVAL_DOMAIN_CHECK_TIMEOUT", "3.0"))
-FDA_API_BRAND_SEARCH_LIMIT    = int(os.getenv("FDA_API_BRAND_SEARCH_LIMIT", "10"))
-FDA_API_APPROVAL_SEARCH_LIMIT = int(os.getenv("FDA_API_APPROVAL_SEARCH_LIMIT", "5"))
 
 # ─────────────────────────────────────────────
 # Forecasted LOE merge pipeline
@@ -275,73 +242,6 @@ NO_QUALIFYING_PATENTS_RATIONALE = (
 # (real LOE data does NOT supersede the forecast).
 # Default False: real data supersedes forecasts for Marketed/Pre-reg drugs.
 NO_MARKETED_SKIP = os.getenv("NO_MARKETED_SKIP", "false").lower() in ("1", "true", "yes")
-
-# ── Column config for the merge pipeline ─────────────────────────────────────
-# These are structured constants — too complex for env vars, edit in-place.
-
-# Columns to drop from the combined DataFrame before writing to BQ.
-DROP_COLUMNS: list = ["rationale"]
-
-# Maps normalised(forecasted_loe column) → normalised(target column).
-# Add entries here when auto-alignment fails because a column name in
-# forecasted_loe is too different from the matching patent-table column name.
-MANUAL_COLUMN_ALIASES: dict = {
-    "filingdatelower": "filingdate",
-    "globalphase":     "phase",
-}
-
-# Canonical output column definitions for glp_master_loe (in output order).
-# Each entry: (canonical_name, [alternative_token_lists]).
-# Each alternative is a list of lowercase tokens that must ALL appear in the
-# normalised column name, or a tuple (required_tokens, exclude_tokens).
-# Columns not found in the merged DataFrame are filled with blank (NA).
-FINAL_COLUMNS: list = [
-    ("Drug Name",                       [["drug"]]),
-    ("Jurisdiction",                    [["jurisdiction"]]),
-    ("Tag",                             [["tag"]]),
-    ("Type",                            [["type"]]),
-    ("Filing Date",                     [["filing", "date"]]),
-    ("Patent Number",                   [["patent", "number"]]),
-    ("No Of Forecasted Patents",        [["noofforecastedpatents"],
-                                          ["numberofforecastedpatents"],
-                                          ["forecastedpatents"],
-                                          ["noofforecasted"]]),
-    ("Years to Entry",                  [(["years", "entry"], ["avg"])]),
-    ("Avg Years to Entry (US & EP)",    [["avgyears", "usep"], ["avgyears"]]),
-    ("IP Dimension 1 Score",            [["ipdimension"]]),
-    ("Step 1 Claim Category",           [["step1claimcategory"], ["step", "claim", "category"]]),
-    ("Grant Date",                      [["grant", "date"]]),
-    ("PTE (months)",                    [["pte"]]),
-    ("Pediatric Exclusivity",           [["pediatric"]]),
-    ("Controlling Patent Expiry Year",  [["controlling", "expiry"]]),
-    ("Exclusivity Year",                [["exclusivity", "year"]]),
-    ("Approval Date",                   [["approval", "date"]]),
-    ("Est. Approval Year",              [["est", "approval", "year"]]),
-    ("Phase",                           [["phase"]]),
-    ("Strategic Purpose",               [["strategic", "purpose"]]),
-    ("Risk Assessment",                 [["risk", "assessment"]]),
-    ("Overall Forecast",                [["overall", "forecast"]]),
-    ("Portfolio Gaps",                  [["portfolio", "gaps"]]),
-    ("Existing Patent Summary",         [["existing", "patent", "summary"]]),
-    ("Reason",                          [["reason"]]),
-]
-
-# BigQuery column types for the output tables, keyed by friendly column name.
-# Any column not listed here is written as STRING. An explicit schema keeps
-# the table stable across runs (autodetect would type an all-blank column
-# differently from one run to the next and break WRITE_APPEND).
-BQ_COLUMN_TYPES: dict = {
-    "No Of Forecasted Patents":       "INT64",
-    "Years to Entry":                 "FLOAT64",
-    "Avg Years to Entry (US & EP)":   "FLOAT64",
-    "IP Dimension 1 Score":           "FLOAT64",
-    "PTE (months)":                   "FLOAT64",
-    "Controlling Patent Expiry Year": "FLOAT64",
-    "Exclusivity Year":               "FLOAT64",
-    "Est. Approval Year":             "FLOAT64",
-    "Avg Years to Entry":             "FLOAT64",
-    "Score":                          "FLOAT64",
-}
 
 # ─────────────────────────────────────────────
 # BigQuery tables

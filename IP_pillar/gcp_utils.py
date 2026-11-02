@@ -3,7 +3,7 @@ gcp_utils.py
 ────────────
 Shared Google Cloud helpers for BigQuery and GCS operations.
 
-Every module (including everything under chunking/) should call into the
+Every module (including the indexer) should call into the
 functions here instead of instantiating its own bigquery.Client /
 storage.Client. Gemini calls go through gemini_utils, never a client of their own.
 """

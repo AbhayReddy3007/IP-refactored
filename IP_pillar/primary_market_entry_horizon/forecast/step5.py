@@ -47,9 +47,9 @@ from google.oauth2 import service_account
 
 load_dotenv(override=True)
 
-from .. import config, gcp_utils
-from ..drug_list import GLP1_DRUG_QUERY
-from ..gemini_utils import gemini_generate
+from ... import config, gcp_utils
+from ...drug_list import GLP1_DRUG_QUERY
+from ...gemini_utils import gemini_generate
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Config — edit these or set via environment variables

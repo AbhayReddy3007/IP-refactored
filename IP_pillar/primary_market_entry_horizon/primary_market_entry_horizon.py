@@ -6,7 +6,7 @@ Orchestrates the whole IP Dimension 1 process for one drug:
     primary_market_entry_horizon(drug_name)   — async; runs every step below end to end
 
     1. List approved patent PDFs for the drug          (patent_filter)
-    2. Fetch, chunk, embed, store them in AlloyDB       (chunking.indexer)
+    2. Fetch, chunk, embed, store them in AlloyDB       (indexer)
     3. Fetch the drug's clinical development timeline   (score_calculation.phase_fetcher)
     4. Run the 5-step blocking analysis                  (blocking_analysis)
     5. Assign phase_at_filing to each patent             (score_calculation.phase_fetcher)
@@ -34,10 +34,10 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from .. import config
-from ..blocking_analysis import run_blocking_analysis
+from .blocking_analysis import run_blocking_analysis
 from ..drug_list import resolve_drug_name
 from ..bq_utils import save_gemini_stats
-from ..chunking.indexer import get_or_create_collection, indexer as run_indexer
+from ..indexer import get_or_create_collection, indexer as run_indexer
 from ..gemini_utils import isolated_gemini_call_stats, reset_gemini_call_stats
 from ..patent_filter import patent_filter
 from .bq_utils import fetch_drug_details_df, load_forecasted_loe_table, publish_table
@@ -107,7 +107,7 @@ async def _run_forecast(drug_name: str, reset: bool) -> Dict:
             logger.info("[HORIZON] %r is Marketed / Pre-registration - skipping forecast_analysis", drug_name)
             return {"skipped": "Marketed / Pre-registration"}
     # Imported here: the forecast package itself uses this package's approval-date fetcher.
-    from ..forecast import forecast_analysis
+    from .forecast import forecast_analysis
 
     logger.info("[HORIZON] Running forecast_analysis ...")
     try:
@@ -141,7 +141,7 @@ def _generate_report(drug_name: str) -> Dict:
 def _generate_blocking_report(drug_name: str, patents: List[Dict]) -> Dict:
     """Build and upload the Blocking Analysis report; {"error": ...} if it fails."""
     # Imported here so reportlab is only needed when a report is built.
-    from ..blocking_analysis.generate_report import report_for_drug
+    from .blocking_analysis.generate_report import report_for_drug
 
     logger.info("[HORIZON] Generating the %s report ...", config.DIMENSION_BLOCKING_ANALYSIS)
     try:

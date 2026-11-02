@@ -40,7 +40,8 @@ from reportlab.platypus import (
 from ... import config
 from ...report_utils import upload_report
 from ...gemini_utils import gemini_api_call
-from ...utils import is_blank, normalize_drug_str, safe_name, setup_logging
+from ...utils import (EXCLUSIVITY_OFFSET_EP, EXCLUSIVITY_OFFSET_US, SCORE_THRESHOLD_2, SCORE_THRESHOLD_3, SCORE_THRESHOLD_4,
+                      SCORE_THRESHOLD_5, is_blank, normalize_drug_str, safe_name, setup_logging)
 from ...bq_utils import load_master_table
 from .generate_rationale import (
     SCORE_LABELS, cell, clean_year, extract_drug_data, fmt_number, forecasted_label,
@@ -131,8 +132,8 @@ def _build_data_block(d: Dict) -> str:
 
     yr = datetime.now().year
     excl_formula = (
-        f"ExclYr(US)=ApprovalYr+{config.EXCLUSIVITY_OFFSET_US}(+0.5 if ped). "
-        f"ExclYr(EP)=ApprovalYr+{config.EXCLUSIVITY_OFFSET_EP}. "
+        f"ExclYr(US)=ApprovalYr+{EXCLUSIVITY_OFFSET_US}(+0.5 if ped). "
+        f"ExclYr(EP)=ApprovalYr+{EXCLUSIVITY_OFFSET_EP}. "
         f"If approval/estimated approval is unavailable: "
         f"Phase 3 -> EstApproval = {yr}+3 = {yr + 3}; Phase 2 -> EstApproval = {yr}+5 = {yr + 5}."
     )
@@ -157,9 +158,9 @@ def _build_data_block(d: Dict) -> str:
         f"FORMULAS: CtrlPatent=latest-filed BLOCKING patent per jurisdiction. "
         f"Expiry=FilingYr+20+(PTE/12). {excl_formula} "
         f"YTE=max(Expiry,ExclYr)-{yr}. "
-        f"AvgYTE=mean(US_YTE,EP_YTE). LOE Score: <={config.SCORE_THRESHOLD_5}->5, "
-        f"<={config.SCORE_THRESHOLD_4}->4, <={config.SCORE_THRESHOLD_3}->3, "
-        f"<={config.SCORE_THRESHOLD_2}->2, otherwise 1."
+        f"AvgYTE=mean(US_YTE,EP_YTE). LOE Score: <={SCORE_THRESHOLD_5}->5, "
+        f"<={SCORE_THRESHOLD_4}->4, <={SCORE_THRESHOLD_3}->3, "
+        f"<={SCORE_THRESHOLD_2}->2, otherwise 1."
     )
 
 
@@ -204,7 +205,7 @@ DATA:
 Write exactly these four sections. Each must be a single focused paragraph of 60-80 words.
 
 REGULATORY EXCLUSIVITY
-State the approval or estimated approval year for each jurisdiction ONLY if available in the data. For US: add {config.EXCLUSIVITY_OFFSET_US} years (plus 0.5 if pediatric exclusivity applies) and show the arithmetic. For EP: add {config.EXCLUSIVITY_OFFSET_EP} years and show the arithmetic. State the resulting exclusivity year for each.
+State the approval or estimated approval year for each jurisdiction ONLY if available in the data. For US: add {EXCLUSIVITY_OFFSET_US} years (plus 0.5 if pediatric exclusivity applies) and show the arithmetic. For EP: add {EXCLUSIVITY_OFFSET_EP} years and show the arithmetic. State the resulting exclusivity year for each.
 If the approval date or estimated approval year is unavailable for a jurisdiction, do NOT mention approval date at all for that jurisdiction. Instead, if an estimated approval year was derived from the Phase (Phase 3 = current year + 3, Phase 2 = current year + 5), use that and show the arithmetic. If neither approval nor phase-based estimate is available, simply omit the exclusivity calculation for that jurisdiction.
 
 CONTROLLING PATENT TERM

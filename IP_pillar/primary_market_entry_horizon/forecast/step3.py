@@ -50,12 +50,12 @@ from google.cloud import bigquery
 
 load_dotenv(override=True)
 
-from .. import config, gcp_utils
-from ..chunking.indexer import get_or_create_collection
-from ..drug_list import drug_list
-from ..gemini_utils import gemini_generate_async
-from ..patent_thicket_and_circumvention.retrieval.alloydb_helpers import _query_collection
-from ..primary_market_entry_horizon.score_calculation import approval_date_fetcher as _fetcher_mod
+from ... import config, gcp_utils
+from ...indexer import get_or_create_collection
+from ...drug_list import drug_list
+from ...gemini_utils import gemini_generate_async
+from ...alloydb_utils import query_collection
+from ..score_calculation import approval_date_fetcher as _fetcher_mod
 from .bq_utils import load_patent_loe
 
 
@@ -869,7 +869,7 @@ async def step1_ip_landscape(drug_filter: Optional[set] = None, loe_df: Optional
 def _get_patent_text(drug_name: str, patent_filename: str) -> str:
     """Fetches the full patent text (its AlloyDB chunks) for a given drug + filename."""
     try:
-        chunks = _query_collection(get_or_create_collection(drug_name), (patent_filename or "").strip())
+        chunks = query_collection(get_or_create_collection(drug_name), (patent_filename or "").strip())
         if not chunks:
             print(f"[STEP 2] WARNING: no patent text found for source file {patent_filename!r} - "
                   f"layering falls back to the claim analysis only")

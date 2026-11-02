@@ -30,8 +30,8 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.platypus import Frame, HRFlowable, KeepTogether, PageTemplate, Paragraph, SimpleDocTemplate, Spacer
 
-from ... import config, report_utils as ru
-from ...gemini_utils import gemini_generate
+from .... import config, report_utils as ru
+from ....gemini_utils import gemini_generate
 
 logger = logging.getLogger(__name__)
 

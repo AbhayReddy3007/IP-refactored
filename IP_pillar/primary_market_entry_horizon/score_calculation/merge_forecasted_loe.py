@@ -13,7 +13,7 @@ run_merge() follows the reference combine() pipeline:
     4. Type blank -> "Existing"; Grant Date = Filing Date for Forecasted rows
     5. stamp forecasted_loe's per-drug Avg Years to Entry + IP Dimension 1 Score on every row
     6. scoring: forecasted expiry -> base Years to Entry -> LOE override -> fallback
-    7. project to config.FINAL_COLUMNS, keeping our extra columns after them
+    7. project to FINAL_COLUMNS, keeping our extra columns after them
     8. add "Rationale" (generate_report_and_rationale.generate_rationale)
 """
 
@@ -23,6 +23,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import pandas as pd
 
 from ... import config
+from ...bq_utils import FINAL_COLUMNS
 from ...utils import find_col, norm_col, norm_phase, normalize_drug_str
 from ..bq_utils import fetch_drug_details_df, load_forecasted_loe_table
 from ..generate_report_and_rationale.generate_rationale import rationale_for_drug
@@ -34,6 +35,19 @@ logger = logging.getLogger(__name__)
 EXISTING = "Existing"
 FORECASTED = "Forecasted"
 
+# ── Column config for the merge pipeline ─────────────────────────────────────
+# These are structured constants — too complex for env vars, edit in-place.
+
+# Columns to drop from the combined DataFrame before writing to BQ.
+DROP_COLUMNS: list = ["rationale"]
+
+# Maps normalised(forecasted_loe column) → normalised(target column).
+# Add entries here when auto-alignment fails because a column name in
+# forecasted_loe is too different from the matching patent-table column name.
+MANUAL_COLUMN_ALIASES: dict = {
+    "filingdatelower": "filingdate",
+    "globalphase":     "phase",
+}
 
 # ─────────────────────────────────────────────
 # pipeline patents -> DataFrame
@@ -72,7 +86,7 @@ def _step2_columns(patent: Dict) -> Dict[str, Optional[object]]:
 
 
 def patents_to_dataframe(patents: List[Dict], drug_name: str) -> pd.DataFrame:
-    """One row per analysed patent, with every config.FINAL_COLUMNS column (in
+    """One row per analysed patent, with every FINAL_COLUMNS column (in
     order) followed by the extra blocking-analysis detail columns."""
     rows = []
     for p in patents:
@@ -154,11 +168,11 @@ def ensure_column(df: pd.DataFrame, canonical_name: str, alternatives: Sequence[
 
 def align_columns(df_source: pd.DataFrame, df_reference: pd.DataFrame) -> pd.DataFrame:
     """Rename df_source columns to df_reference's spelling where they are the
-    same field (identical normalised name, or a config.MANUAL_COLUMN_ALIASES entry)."""
+    same field (identical normalised name, or a MANUAL_COLUMN_ALIASES entry)."""
     ref_by_norm = {norm_col(c): c for c in df_reference.columns}
     rename_map = {}
     for c in df_source.columns:
-        target_norm = config.MANUAL_COLUMN_ALIASES.get(norm_col(c), norm_col(c))
+        target_norm = MANUAL_COLUMN_ALIASES.get(norm_col(c), norm_col(c))
         target = ref_by_norm.get(target_norm)
         if target and target != c:
             rename_map[c] = target
@@ -168,11 +182,11 @@ def align_columns(df_source: pd.DataFrame, df_reference: pd.DataFrame) -> pd.Dat
 
 
 def final_column_matches(df: pd.DataFrame) -> Dict[str, str]:
-    """{friendly name: source column} for every config.FINAL_COLUMNS entry
+    """{friendly name: source column} for every FINAL_COLUMNS entry
     found in *df*, using its token rules. Each source column is used once."""
     used: set = set()
     matches: Dict[str, str] = {}
-    for friendly, alternatives in config.FINAL_COLUMNS:
+    for friendly, alternatives in FINAL_COLUMNS:
         for alt in alternatives:
             required, exclude = alt if isinstance(alt, tuple) else (alt, [])
             match = next((c for c in df.columns if c not in used
@@ -186,18 +200,18 @@ def final_column_matches(df: pd.DataFrame) -> Dict[str, str]:
 
 
 def rename_to_final_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Rename fuzzy-matched columns to their config.FINAL_COLUMNS friendly names."""
+    """Rename fuzzy-matched columns to their FINAL_COLUMNS friendly names."""
     rename_map = {src: friendly for friendly, src in final_column_matches(df).items()
                   if src != friendly and friendly not in df.columns}
     return df.rename(columns=rename_map)
 
 
 def select_final_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, set]:
-    """Project *df* onto config.FINAL_COLUMNS (friendly names, in order).
+    """Project *df* onto FINAL_COLUMNS (friendly names, in order).
     Returns (result, set of source columns used)."""
     matches = final_column_matches(df)
     data: Dict[str, object] = {}
-    for friendly, _ in config.FINAL_COLUMNS:
+    for friendly, _ in FINAL_COLUMNS:
         if friendly in matches:
             data[friendly] = df[matches[friendly]].values
         else:
@@ -304,7 +318,7 @@ def run_merge(patents: List[Dict], drug_name: str) -> pd.DataFrame:
     combined["Grant Date"] = combined["Grant Date"].astype(object)
     combined.loc[is_forecasted, "Grant Date"] = combined.loc[is_forecasted, scoring.FILING_COL]
 
-    drop = {norm_col(d) for d in config.DROP_COLUMNS}
+    drop = {norm_col(d) for d in DROP_COLUMNS}
     combined = combined.drop(columns=[c for c in combined.columns if norm_col(c) in drop])
 
     # forecasted_loe's per-drug Avg / Score apply to every row of the drug;

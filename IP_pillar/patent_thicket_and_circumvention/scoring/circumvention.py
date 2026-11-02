@@ -11,7 +11,7 @@ import pandas as pd
 
 from ... import config
 from ...gemini_utils import gemini_api_call, gemini_generate_async
-from ..retrieval.alloydb_helpers import fetch_relevant_chunks
+from ...alloydb_utils import fetch_relevant_chunks
 from .constants import CATEGORY_CONCURRENCY, MAX_PATENTS_PER_CATEGORY
 from .prompts import CIRCUMVENTION_ONLINE_PROMPT, CIRCUMVENTION_PROMPT, CIRCUMVENTION_SEARCH_PROMPT
 

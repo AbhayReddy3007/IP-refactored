@@ -10,7 +10,7 @@ the merged LOE table, applied in this order by merge_forecasted_loe.run_merge():
     fill_missing_avg_score()            last resort: avg of max US / EP Years to Entry
 
 All functions take and return the merged DataFrame (friendly column names
-from config.FINAL_COLUMNS) and mutate it in place.
+from bq_utils.FINAL_COLUMNS) and mutate it in place.
 """
 
 import logging
@@ -20,9 +20,8 @@ from typing import Dict, Optional
 import numpy as np
 import pandas as pd
 
-from ... import config
 from .phase_fetcher import drug_details_columns
-from ...utils import find_col, ip_dimension_score, jurisdiction_code, normalize, split_jurisdiction_tokens, year_from_value
+from ...utils import EXCLUSIVITY_OFFSET_EP, EXCLUSIVITY_OFFSET_US, PATENT_TERM_YEARS, find_col, ip_dimension_score, jurisdiction_code, normalize, split_jurisdiction_tokens, year_from_value
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +38,7 @@ EST_APPROVAL_COL = "Est. Approval Year"
 
 def exclusivity_offsets() -> Dict[str, int]:
     """Years of regulatory exclusivity after approval, per jurisdiction token."""
-    return {"US": config.EXCLUSIVITY_OFFSET_US, "EP": config.EXCLUSIVITY_OFFSET_EP}
+    return {"US": EXCLUSIVITY_OFFSET_US, "EP": EXCLUSIVITY_OFFSET_EP}
 
 
 def _missing_columns(df: pd.DataFrame, *cols: str) -> list:
@@ -66,9 +65,9 @@ def apply_forecasted_filing_expiry(df: pd.DataFrame) -> pd.DataFrame:
     is_forecasted = df[TYPE_COL].astype(str).str.strip().str.lower() == "forecasted"
     filing_year = df.loc[is_forecasted, FILING_COL].map(year_from_value).astype("float64")
     usable = filing_year.notna()
-    df.loc[filing_year[usable].index, EXPIRY_COL] = filing_year[usable] + config.PATENT_TERM_YEARS
+    df.loc[filing_year[usable].index, EXPIRY_COL] = filing_year[usable] + PATENT_TERM_YEARS
     logger.info("[SCORING] Forecasted expiry = filing year + %d for %d of %d forecasted row(s)",
-                config.PATENT_TERM_YEARS, int(usable.sum()), int(is_forecasted.sum()))
+                PATENT_TERM_YEARS, int(usable.sum()), int(is_forecasted.sum()))
     return df
 
 

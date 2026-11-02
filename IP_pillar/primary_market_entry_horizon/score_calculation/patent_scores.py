@@ -33,8 +33,8 @@ from typing import Dict, List, Optional
 
 from dateutil.relativedelta import relativedelta
 
-from ... import config
-from ...utils import ip_dimension_score
+from ...utils import (EXCLUSIVITY_OFFSET_DEFAULT, EXCLUSIVITY_OFFSET_EP, EXCLUSIVITY_OFFSET_US, PATENT_TERM_YEARS,
+                      ip_dimension_score)
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +111,7 @@ def patent_expiry_date(patent: Dict) -> Optional[datetime]:
     fd = _parse_date(patent.get("filing_date"))
     if not fd:
         return None
-    expiry = fd + relativedelta(years=config.PATENT_TERM_YEARS)
+    expiry = fd + relativedelta(years=PATENT_TERM_YEARS)
     return expiry + relativedelta(months=int(_pte_months(patent)))
 
 
@@ -204,8 +204,8 @@ def assign_exclusivity_year(patents: List[Dict]) -> List[Dict]:
     """
     logger.info("[EXCLUSIVITY] Calculating exclusivity date...")
 
-    _JURISDICTION_OFFSET = {"US": config.EXCLUSIVITY_OFFSET_US, "EP": config.EXCLUSIVITY_OFFSET_EP}
-    _DEFAULT_OFFSET = config.EXCLUSIVITY_OFFSET_DEFAULT
+    _JURISDICTION_OFFSET = {"US": EXCLUSIVITY_OFFSET_US, "EP": EXCLUSIVITY_OFFSET_EP}
+    _DEFAULT_OFFSET = EXCLUSIVITY_OFFSET_DEFAULT
 
     for p in patents:
         p["exclusivity_year"] = None

@@ -24,7 +24,7 @@ forecasted_loe, is merged into glp_master_loe by the next primary_market_entry_h
 Input is glp_patent_loe, so run primary_market_entry_horizon for the drug first.
 
 Usage:
-    from IP_pillar.forecast import forecast_analysis
+    from IP_pillar.primary_market_entry_horizon.forecast import forecast_analysis
 
     result = await forecast_analysis("semaglutide")
 """
@@ -36,10 +36,10 @@ import time
 import pandas as pd
 from typing import Dict, List, Optional
 
-from .. import config
-from ..bq_utils import save_gemini_stats
-from ..drug_list import resolve_drug_name
-from ..gemini_utils import reset_gemini_call_stats
+from ... import config
+from ...bq_utils import save_gemini_stats
+from ...drug_list import resolve_drug_name
+from ...gemini_utils import reset_gemini_call_stats
 from .bq_utils import (
     load_company_analysis, load_filing_pattern, load_patent_loe, write_company_analysis,
     write_filing_pattern, write_forecast_s3, write_forecasted_loe,

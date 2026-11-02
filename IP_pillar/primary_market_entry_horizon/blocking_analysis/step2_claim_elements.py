@@ -21,8 +21,8 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from .. import config
-from .. import gcp_helpers
+from ... import config
+from ... import gcp_helpers
 
 logger = logging.getLogger(__name__)
 

@@ -20,15 +20,20 @@ Usage:
     files_by_drug = list_glp1_patent_files()      # {"semaglutide": [{"filename": ..., "blob_name": ...}, ...], ...}
 
 CLI:
-    python -m IP_pillar.drug_list
+    python -m IP_pillar.drug_list                       # list every GLP-1 drug's patent files in GCS
+    python -m IP_pillar.drug_list --align               # rewrite Drug Name in the LOE tables to the drug list's spelling
+    python -m IP_pillar.drug_list --align --drug Bgm-0504
 """
 
+import argparse
 import logging
 from typing import Dict, List
 
+from google.cloud import bigquery
+
 from . import config
 from . import gcp_utils
-from .utils import normalize, normalize_drug_str
+from .utils import bq_safe_name, normalize, normalize_drug_str, setup_logging
 from .patent_filter import patent_filter
 
 logger = logging.getLogger(__name__)
@@ -173,12 +178,65 @@ def list_glp1_drugs_with_patent_master_rows() -> List[str]:
     return found
 
 
+# ─────────────────────────────────────────────
+# One-off fix — align the spelling of Drug Name in the LOE tables
+# ─────────────────────────────────────────────
+# Rewrites the `Drug Name` column of glp_patent_loe / glp_master_loe so each drug uses the drug list's spelling
+# (cleaned_generic_name, e.g. "Bgm-0504" rather than "bgm-0504"). Only that column is updated — nothing is
+# re-indexed or re-analysed. Names are matched ignoring case and all whitespace, like delete_rows.delete_drug_rows().
+
+DRUG_NAME_BQ_COLUMN = bq_safe_name("Drug Name")
+
+
+def align_drug_name(table_id: str, drug_name: str) -> int:
+    """Set Drug Name to *drug_name* on every row of that drug whose spelling
+    differs. Returns the number of rows updated."""
+    sql = (
+        f"UPDATE `{table_id}` SET {DRUG_NAME_BQ_COLUMN} = @drug_name "
+        f"WHERE REGEXP_REPLACE(LOWER({DRUG_NAME_BQ_COLUMN}), r'\\s+', '') = REGEXP_REPLACE(LOWER(@drug_name), r'\\s+', '') "
+        f"AND {DRUG_NAME_BQ_COLUMN} != @drug_name"
+    )
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("drug_name", "STRING", drug_name)]
+    )
+    job = gcp_utils.get_bq_client().query(sql, job_config=job_config)
+    job.result()
+    updated = job.num_dml_affected_rows or 0
+    if updated:
+        logger.info("[ALIGN] %s: %d row(s) renamed to %r", table_id, updated, drug_name)
+    return updated
+
+
+def align_drug_names(only_drug: str = None) -> None:
+    """align_drug_name() for every drug in the drug list (or just *only_drug*), on both LOE tables."""
+    drugs = drug_list()
+    if only_drug:
+        wanted = only_drug.strip().lower()
+        drugs = [d for d in drugs if d.lower() == wanted] or [only_drug.strip()]
+    if not drugs:
+        logger.error("[ALIGN] Drug list is empty — nothing to align")
+        return
+
+    for table_id in (config.BQ_PATENT_LOE_TABLE, config.BQ_MASTER_LOE_TABLE):
+        total = sum(align_drug_name(table_id, drug) for drug in drugs)
+        logger.info("[ALIGN] %s: %d row(s) updated in total", table_id, total)
+
+
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    result = list_glp1_patent_files()
-    if not result:
-        print("No GLP-1 drugs with patent files found.")
-    for drug, refs in result.items():
-        print(f"\n{drug} ({len(refs)} file(s)):")
-        for r in refs:
-            print(f"  {r['filename']}")
+    parser = argparse.ArgumentParser(description="GLP-1 drug list: patent files in GCS, or align Drug Name spelling")
+    parser.add_argument("--align", action="store_true",
+                        help="Align Drug Name in glp_patent_loe / glp_master_loe with the drug list's spelling.")
+    parser.add_argument("--drug", default=None, help="With --align: only this drug (default: every drug in the drug list).")
+    args = parser.parse_args()
+    setup_logging()
+
+    if args.align:
+        align_drug_names(args.drug)
+    else:
+        result = list_glp1_patent_files()
+        if not result:
+            print("No GLP-1 drugs with patent files found.")
+        for drug, refs in result.items():
+            print(f"\n{drug} ({len(refs)} file(s)):")
+            for r in refs:
+                print(f"  {r['filename']}")

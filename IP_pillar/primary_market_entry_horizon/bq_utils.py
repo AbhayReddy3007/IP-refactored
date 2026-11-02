@@ -35,6 +35,24 @@ from ..utils import bq_safe_name, safe_name, stringify_cell
 logger = logging.getLogger(__name__)
 
 
+# BigQuery column types for the output tables, keyed by friendly column name.
+# Any column not listed here is written as STRING. An explicit schema keeps
+# the table stable across runs (autodetect would type an all-blank column
+# differently from one run to the next and break WRITE_APPEND).
+BQ_COLUMN_TYPES: dict = {
+    "No Of Forecasted Patents":       "INT64",
+    "Years to Entry":                 "FLOAT64",
+    "Avg Years to Entry (US & EP)":   "FLOAT64",
+    "IP Dimension 1 Score":           "FLOAT64",
+    "PTE (months)":                   "FLOAT64",
+    "Controlling Patent Expiry Year": "FLOAT64",
+    "Exclusivity Year":               "FLOAT64",
+    "Est. Approval Year":             "FLOAT64",
+    "Avg Years to Entry":             "FLOAT64",
+    "Score":                          "FLOAT64",
+}
+
+
 # ─────────────────────────────────────────────
 # Reads
 # ─────────────────────────────────────────────
@@ -141,17 +159,17 @@ def _coerce(series: pd.Series, bq_type: str) -> pd.Series:
 
 
 def prepare_table(df: pd.DataFrame) -> pd.DataFrame:
-    """Coerce each column to its BigQuery type (config.BQ_COLUMN_TYPES, else
+    """Coerce each column to its BigQuery type (BQ_COLUMN_TYPES, else
     STRING) and rename columns to BigQuery-safe names."""
     out = pd.DataFrame(index=df.index)
     for col in df.columns:
-        out[bq_safe_name(col)] = _coerce(df[col], config.BQ_COLUMN_TYPES.get(col, "STRING"))
+        out[bq_safe_name(col)] = _coerce(df[col], BQ_COLUMN_TYPES.get(col, "STRING"))
     return out.reset_index(drop=True)
 
 
 def bq_schema(df: pd.DataFrame) -> List[bigquery.SchemaField]:
     """Schema for a frame returned by prepare_table()."""
-    types_by_safe_name = {bq_safe_name(k): v for k, v in config.BQ_COLUMN_TYPES.items()}
+    types_by_safe_name = {bq_safe_name(k): v for k, v in BQ_COLUMN_TYPES.items()}
     return [bigquery.SchemaField(c, types_by_safe_name.get(c, "STRING"), mode="NULLABLE") for c in df.columns]
 
 

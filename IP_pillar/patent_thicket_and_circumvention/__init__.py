@@ -10,7 +10,6 @@ primary_market_entry_horizon) and writes Circumvention_Table + Patent_Thicket_Sc
 
     retrieval/   what goes in
         data_prep.py        the drug's glp_master_loe rows, cleaned, approved patents only; its NON-BLOCKING patents
-        alloydb_helpers.py  patent-chunk retrieval (collections and client come from chunking)
     scoring/     how the drug is scored and analysed
         scoring.py          density / diversity / final thicket score per jurisdiction
         circumvention.py    design-around analysis per claim category (AlloyDB chunks + Gemini + Google Search)

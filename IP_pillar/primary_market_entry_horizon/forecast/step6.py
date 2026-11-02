@@ -41,9 +41,9 @@ except ImportError:
 
 load_dotenv(override=True)
 
-from .. import config, gcp_utils
-from ..drug_list import GLP1_DRUG_QUERY
-from ..gemini_utils import gemini_generate_async
+from ... import config, gcp_utils
+from ...drug_list import GLP1_DRUG_QUERY
+from ...gemini_utils import gemini_generate_async
 
 
 # ─────────────────────────────────────────────

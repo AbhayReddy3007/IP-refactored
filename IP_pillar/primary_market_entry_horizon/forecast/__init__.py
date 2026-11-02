@@ -16,7 +16,7 @@ forecasted_loe, which the next primary_market_entry_horizon run merges into glp_
     generate_report/   written on every run
         generate_report.py  the PDF report (Gemini text from the forecast and the existing patents), uploaded to GCS
 
-Each step file can still be run on its own with `python -m IP_pillar.forecast.stepN`.
+Each step file can still be run on its own with `python -m IP_pillar.primary_market_entry_horizon.forecast.stepN`.
 """
 
 from .forecast_analysis import forecast_analysis

@@ -30,8 +30,8 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from .. import config, report_utils as ru
-from ..gemini_utils import gemini_api_call
+from ... import config, report_utils as ru
+from ...gemini_utils import gemini_api_call
 
 logger = logging.getLogger(__name__)
 

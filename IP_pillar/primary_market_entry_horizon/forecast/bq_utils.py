@@ -22,8 +22,8 @@ from typing import Dict, List
 import pandas as pd
 from google.cloud import bigquery
 
-from .. import config, gcp_utils
-from ..bq_utils import coerce_to_schema, load_patent_loe, replace_drug_rows, table_schema, write_drug_rows
+from ... import config, gcp_utils
+from ...bq_utils import coerce_to_schema, load_patent_loe, replace_drug_rows, table_schema, write_drug_rows
 
 logger = logging.getLogger(__name__)
 

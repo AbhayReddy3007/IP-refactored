@@ -33,11 +33,10 @@ from typing import Dict, List, Optional
 from google.cloud import bigquery
 from google.genai import types
 
-from .. import config
-from .. import gcp_utils
-from ..gemini_utils import gemini_generate_async
-from ..utils import normalize_patent_number
-from .utils import clean_date, fmt_elapsed
+from . import config
+from . import gcp_utils
+from .gemini_utils import gemini_generate_async
+from .utils import clean_date, fmt_elapsed, normalize_patent_number
 
 logger = logging.getLogger(__name__)
 

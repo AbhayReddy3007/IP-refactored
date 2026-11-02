@@ -9,14 +9,16 @@ Nothing here talks to Google Cloud — GCP I/O belongs in gcp_utils.py.
 """
 
 import logging
+import os
 import re
 import sys
+import time
 from datetime import datetime
-from typing import Iterable, Optional, Set
+from typing import Iterable, List, Optional, Set
 
 import pandas as pd
 
-from . import config
+from . import config  # noqa: F401 - loads .env before the os.getenv constants below
 
 
 # ─────────────────────────────────────────────
@@ -262,19 +264,42 @@ def year_from_value(val) -> Optional[float]:
 
 
 # ─────────────────────────────────────────────
+# Exclusivity offsets + score thresholds (shared by the horizon scoring, its report and the launch-sequencing expiry)
+# ─────────────────────────────────────────────
+# Statutory patent term, counted from the filing date (before any PTE).
+PATENT_TERM_YEARS = 20
+
+# Years of market exclusivity added on top of the approval date per jurisdiction.
+EXCLUSIVITY_OFFSET_US      = int(os.getenv("EXCLUSIVITY_OFFSET_US", "5"))
+EXCLUSIVITY_OFFSET_EP      = int(os.getenv("EXCLUSIVITY_OFFSET_EP", "10"))
+EXCLUSIVITY_OFFSET_DEFAULT = int(os.getenv("EXCLUSIVITY_OFFSET_DEFAULT", "8"))
+
+# Avg-years-to-entry breakpoints for the 1–5 IP score:
+#   avg <= SCORE_THRESHOLD_5 → 5   (most blocking)
+#   avg <= SCORE_THRESHOLD_4 → 4
+#   avg <= SCORE_THRESHOLD_3 → 3
+#   avg <= SCORE_THRESHOLD_2 → 2
+#   else                     → 1
+SCORE_THRESHOLD_5 = int(os.getenv("SCORE_THRESHOLD_5", "6"))
+SCORE_THRESHOLD_4 = int(os.getenv("SCORE_THRESHOLD_4", "8"))
+SCORE_THRESHOLD_3 = int(os.getenv("SCORE_THRESHOLD_3", "11"))
+SCORE_THRESHOLD_2 = int(os.getenv("SCORE_THRESHOLD_2", "13"))
+
+
+# ─────────────────────────────────────────────
 # IP Dimension 1 score
 # ─────────────────────────────────────────────
 
 def ip_dimension_score(avg_years: float) -> int:
     """Bucket average years to entry into the 1–5 IP Dimension 1 Score
-    (config.SCORE_THRESHOLD_*). Fewer years until entry -> higher score."""
-    if avg_years <= config.SCORE_THRESHOLD_5:
+    (SCORE_THRESHOLD_*). Fewer years until entry -> higher score."""
+    if avg_years <= SCORE_THRESHOLD_5:
         return 5
-    if avg_years <= config.SCORE_THRESHOLD_4:
+    if avg_years <= SCORE_THRESHOLD_4:
         return 4
-    if avg_years <= config.SCORE_THRESHOLD_3:
+    if avg_years <= SCORE_THRESHOLD_3:
         return 3
-    if avg_years <= config.SCORE_THRESHOLD_2:
+    if avg_years <= SCORE_THRESHOLD_2:
         return 2
     return 1
 
@@ -296,3 +321,68 @@ def stringify_cell(v) -> Optional[str]:
     if isinstance(v, (pd.Timestamp, datetime)):
         return v.strftime("%Y-%m-%d")
     return str(v).strip()
+
+
+# ─────────────────────────────────────────────
+# Indexer / date helpers (text chunking, dates, timing)
+# ─────────────────────────────────────────────
+
+def fmt_elapsed(start: float) -> str:
+    """Seconds since *start* (a time.monotonic() value), e.g. '3.2s' — every
+    indexing step logs how long it took so a stuck step is visible."""
+    return f"{time.monotonic() - start:.1f}s"
+
+
+def safe_collection_name(drug_name: str) -> str:
+    """Strict alphanumeric-safe name for AlloyDB collection identifiers."""
+    s = str(drug_name or "").strip()
+    s = re.sub(r"[^a-zA-Z0-9_-]", "_", s)
+    s = re.sub(r"[_-]{2,}", "_", s)
+    return s.strip("_-")
+
+
+def chunk_text(text: str, chunk_size: int, overlap: int) -> List[str]:
+    """Split *text* into overlapping chunks, breaking on sentence/paragraph
+    boundaries where possible."""
+    if overlap >= chunk_size:
+        raise ValueError(f"overlap ({overlap}) must be less than chunk_size ({chunk_size})")
+
+    chunks, start = [], 0
+    while start < len(text):
+        end = start + chunk_size
+        chunk = text[start:end]
+        if end < len(text):
+            bp = max(chunk.rfind("."), chunk.rfind("\n"))
+            if bp > chunk_size // 2:
+                chunk = chunk[: bp + 1]
+                end = start + bp + 1
+        chunk = chunk.strip()
+        if chunk:
+            chunks.append(chunk)
+        start = end - overlap
+    return chunks
+
+
+def clean_date(val) -> Optional[str]:
+    """Normalise a date value returned by Gemini into YYYY-MM-DD (or None)."""
+    if val is None or not isinstance(val, str):
+        return None
+
+    stripped = val.strip()
+    if stripped.lower() in ("null", "none", "n/a", "unknown", ""):
+        return None
+
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", stripped):
+        return stripped
+
+    for fmt in (
+        "%B %d, %Y", "%b. %d, %Y", "%b %d, %Y",
+        "%m/%d/%Y", "%d/%m/%Y",
+        "%d.%m.%Y", "%Y.%m.%d", "%d-%m-%Y",
+    ):
+        try:
+            return datetime.strptime(stripped, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+
+    return None

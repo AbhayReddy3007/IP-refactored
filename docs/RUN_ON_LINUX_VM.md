@@ -169,7 +169,7 @@ tail -f logs/semaglutide_*.log
 | **JSON of each table** | `gs://<GCS_BUCKET>/pipeline_cache/loe_json_exports/glp_patent_loe/<drug>_<YYYYMMDD_HHMMSS>.json`<br>`gs://<GCS_BUCKET>/pipeline_cache/loe_json_exports/glp_master_loe/<drug>_<YYYYMMDD_HHMMSS>.json` |
 | Resume / analysis caches | `gs://<GCS_BUCKET>/pipeline_cache/indexer_progress/`, `.../analysis_cache/<drug>/` |
 
-Both BigQuery tables have the 26 `FINAL_COLUMNS` from `config.py` first, in order (with BigQuery-safe names, e.g. `PTE (months)` → `PTE_months`), followed by extra blocking-analysis columns. Each run **replaces that drug's rows**, so re-running a drug never duplicates it. Each JSON file is a timestamped snapshot holding exactly the rows loaded for that drug in that run.
+Both BigQuery tables have the 26 `FINAL_COLUMNS` from `IP_pillar/bq_utils.py` first, in order (with BigQuery-safe names, e.g. `PTE (months)` → `PTE_months`), followed by extra blocking-analysis columns. Each run **replaces that drug's rows**, so re-running a drug never duplicates it. Each JSON file is a timestamped snapshot holding exactly the rows loaded for that drug in that run.
 
 Check the results:
 
@@ -204,9 +204,8 @@ ip-refactored/
     ├── drug_list.py          drug_list(): the GLP-1 drug names (BigQuery) + resolve_drug_name()
     ├── delete_rows.py        delete_drug_rows(): clear a drug's rows from the LOE tables before re-writing them
     ├── patent_filter.py      patent_filter(): a drug's approved patent PDFs in GCS
-    ├── chunking/             indexer (Gemini text + embeddings), dates, alloydb_client
-    ├── blocking_analysis/    blocking_analysis + step1..step5
-    ├── primary_market_entry_horizon/
+    ├── indexer.py, alloydb_utils.py, dates.py   Gemini text + embeddings, AlloyDB storage, patent dates
+    ├── primary_market_entry_horizon/   (also holds blocking_analysis/ with step1..step5, and forecast/)
     │   ├── primary_market_entry_horizon.py   orchestrates the whole per-drug pipeline
     │   ├── score_calculation/
     │   │   ├── patent_scores.py       per-patent years-to-entry + scores (calculate_scores)
