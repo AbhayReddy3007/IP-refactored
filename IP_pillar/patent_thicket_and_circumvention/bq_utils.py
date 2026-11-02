@@ -2,7 +2,7 @@
 bq_utils.py
 ───────────
 The BigQuery writes of the patent thicket / circumvention dimension (the glp_master_loe read and the
-replace-a-drug's-rows step are shared: IP_pillar/bq_utils.py).
+replace-a-drug's-rows step are shared: ip_pillar/bq_utils.py).
 
 Writes (each run replaces only that drug's rows, so re-runs never duplicate):
     write_circumvention_to_bq(...)    design-around strategies, one row per strategy per claim category
@@ -11,7 +11,7 @@ Writes (each run replaces only that drug's rows, so re-runs never duplicate):
                                       (config.BQ_THICKET_SCORE_TABLE)
 
 Written rows follow the table's existing column types; columns the table lacks are added.
-All BigQuery access goes through IP_pillar.gcp_helpers / gcp_utils; table IDs come from IP_pillar.config.
+All BigQuery access goes through ip_pillar.gcp_helpers / gcp_utils; table IDs come from ip_pillar.config.
 """
 
 import logging

@@ -254,6 +254,6 @@ def build_report(drug_name: str, scored: List[Dict], patents: pd.DataFrame, outp
 
 def report_for_drug(drug_name: str, scored: List[Dict], patents: pd.DataFrame) -> dict:
     """Build the report in a temporary directory and upload it. Called at the end of every
-    forecast_analysis run. Returns {"drug_name", "gcs_uri", "archive_uri"}."""
+    forecast run. Returns {"drug_name", "gcs_uri", "archive_uri"}."""
     return ru.publish_report(drug_name, config.REPORT_NAME_FORECAST,
                              lambda path: build_report(drug_name, scored, patents, path))

@@ -2,7 +2,7 @@
 bq_utils.py
 ───────────
 The BigQuery tasks specific to the global launch sequencing and geographic arbitrage dimension
-(the glp_master_loe read and the replace-a-drug's-rows write are shared: IP_pillar/bq_utils.py).
+(the glp_master_loe read and the replace-a-drug's-rows write are shared: ip_pillar/bq_utils.py).
 
 Reads:
     load_analysis_cache(drug)         approval dates and PTE lookups of the drug's previous run
@@ -13,7 +13,7 @@ Writes (each run replaces only that drug's rows, so re-runs never duplicate):
     write_arbitrage(drug, df, rationale)   one row per jurisdiction, in launch order, each with the drug's
                                       rationale; Dimension IV Score is stored as Score  (config.BQ_ARBITRAGE_TABLE)
 
-All BigQuery access goes through IP_pillar.gcp_helpers / the shared bq_utils; table IDs come from IP_pillar.config.
+All BigQuery access goes through ip_pillar.gcp_helpers / the shared bq_utils; table IDs come from ip_pillar.config.
 """
 
 import logging

@@ -21,8 +21,8 @@ Per drug:
        (the file name is config.REPORT_NAME_PATENT_STRENGTH)
 
 Usage:
-    python -m IP_pillar.patent_strength.generate_report_and_rationale.generate_report --drug "Semaglutide"
-    python -m IP_pillar.patent_strength.generate_report_and_rationale.generate_report --drug "Semaglutide" -o ./reports --no-upload
+    python -m ip_pillar.patent_strength.generate_report_and_rationale.generate_report --drug "Semaglutide"
+    python -m ip_pillar.patent_strength.generate_report_and_rationale.generate_report --drug "Semaglutide" -o ./reports --no-upload
 """
 
 import argparse

@@ -23,7 +23,7 @@ Orchestrates the IP "Global Launch Sequencing and Geographic Arbitrage" dimensio
 Input is glp_master_loe, so run primary_market_entry_horizon for the drug first.
 
 Usage:
-    from IP_pillar.global_launch_sequencing_and_geographic_arbitrage import (
+    from ip_pillar.global_launch_sequencing_and_geographic_arbitrage import (
         global_launch_sequencing_and_geographic_arbitrage)
 
     result = await global_launch_sequencing_and_geographic_arbitrage("semaglutide")
@@ -34,6 +34,7 @@ import logging
 import time
 
 from .. import config
+from ..utils import store_payload
 from ..bq_utils import save_gemini_stats
 from ..drug_list import resolve_drug_name
 from ..gemini_utils import reset_gemini_call_stats
@@ -45,42 +46,23 @@ from .constants import FINAL_COLUMNS
 from .expiry import add_expiry_gap, apply_type_overrides, compute_expiries, longest_expiry_per_jurisdiction
 from .filters import shortlist_patents, years_to_entry_map
 from .generate_report_and_rationale.generate_rationale import rationale_for_drug
+from .launch_helpers import generate_reports
 from .pte import fill_pte
 
 logger = logging.getLogger(__name__)
 
 
-def _generate_reports(drug: str, shortlisted, arbitrage, rationale: str) -> dict:
-    """Build and upload the dimension's two reports: {"report": ..., "pte_report": ...}, each with an
-    "error" instead of its URIs if it fails."""
-    # Imported here so reportlab is only needed when a report is built.
-    from .generate_report_and_rationale.generate_report import generate_dim4_report, generate_pte_report
-
-    builds = {
-        "report": (config.DIMENSION_GLOBAL_LAUNCH, lambda: generate_dim4_report.report_for_drug(drug, shortlisted, arbitrage, rationale)),
-        "pte_report": (config.DIMENSION_PTE_ANALYSIS, lambda: generate_pte_report.report_for_drug(drug, shortlisted, arbitrage)),
-    }
-    reports = {}
-    for key, (name, build) in builds.items():
-        logger.info("[LAUNCH] Generating the %s report ...", name)
-        try:
-            reports[key] = build()
-        except Exception as e:
-            logger.exception("[LAUNCH] %s report failed for %r", name, drug)
-            reports[key] = {"error": str(e), "gcs_uri": None, "archive_uri": None}
-            continue
-        logger.info("[LAUNCH] %s report -> %s", name, reports[key]["gcs_uri"])
-    return reports
-
-
-async def global_launch_sequencing_and_geographic_arbitrage(drug_name: str, reset: bool = False) -> dict:
+@store_payload(config.DIMENSION_GLOBAL_LAUNCH)
+async def global_launch_sequencing_and_geographic_arbitrage(drug_name: str) -> dict:
     """
     Global-launch-sequencing and geographic-arbitrage pipeline for ONE drug, plus a Gemini usage row per
     model in config.GEMINI_STATS_TABLE (written even when the run fails).
 
+    The drug name is the only input; config.REINDEX (run_ip_dimension --reindex) ignores the approval dates
+    and PTE of the previous run and looks everything up again.
+
     Args:
         drug_name: Drug name; resolved to the drug list's spelling and used for every output.
-        reset:     Ignore the approval dates and PTE of the previous run and look everything up again.
 
     Returns:
         {"drug_name", "shortlisted_patents", "launch_order": [jurisdictions], "dimension_iv_score",
@@ -113,7 +95,7 @@ async def global_launch_sequencing_and_geographic_arbitrage(drug_name: str, rese
                           rationale=config.NO_QUALIFYING_PATENTS_RATIONALE)
 
         # Steps 3-4: approval dates, PTE, expiries (lookups of the previous run are reused)
-        approval_cache, pte_cache = ({}, {}) if reset else await asyncio.to_thread(load_analysis_cache, drug)
+        approval_cache, pte_cache = ({}, {}) if config.REINDEX else await asyncio.to_thread(load_analysis_cache, drug)
         await fill_approval_dates(shortlisted, drug, approval_cache, marketed_jurisdictions(df))
         await fill_pte(shortlisted, drug, pte_cache)
         compute_expiries(shortlisted)
@@ -132,7 +114,7 @@ async def global_launch_sequencing_and_geographic_arbitrage(drug_name: str, rese
 
         # Step 7: the dimension's PDF report, from this run's results. A failed report is recorded in
         # the result but does not fail the run.
-        reports = (await asyncio.to_thread(_generate_reports, drug, shortlisted, arbitrage, rationale)
+        reports = (await asyncio.to_thread(generate_reports, drug, shortlisted, arbitrage, rationale)
                    if not arbitrage.empty else {})
 
         # Step 8: BigQuery

@@ -5,7 +5,7 @@ in-memory, sub-factor-specific chunk re-ranking.
 
 fetch_all_chunks_for_patent searches the drug's collection first, then looks
 for the file in any other drug's collection (the indexer shares patents
-across drugs). Collections and the AlloyDB client come from IP_pillar.indexer / IP_pillar.alloydb_utils.
+across drugs). Collections and the AlloyDB client come from ip_pillar.indexer / ip_pillar.alloydb_utils.
 """
 
 import logging

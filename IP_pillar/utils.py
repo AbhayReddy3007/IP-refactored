@@ -1,13 +1,17 @@
 """
 utils.py
 ────────
-Pure helper functions shared across the whole IP_pillar package:
+Pure helper functions shared across the whole ip_pillar package:
 name/text normalisation, DataFrame column lookup, jurisdiction tokens,
 date parsing, the score bucketing, BigQuery-safe naming, and logging setup.
 
-Nothing here talks to Google Cloud — GCP I/O belongs in gcp_utils.py.
+The one exception is store_payload(), the decorator that saves a dimension's result to GCS; it calls
+gcp_utils (imported inside the wrapper, as gcp_utils itself imports from this package). Other GCP I/O belongs
+in gcp_utils.py.
 """
 
+import asyncio
+import functools
 import logging
 import os
 import re
@@ -386,3 +390,30 @@ def clean_date(val) -> Optional[str]:
             continue
 
     return None
+
+
+# ─────────────────────────────────────────────
+# Dimension payload (saved to GCS)
+# ─────────────────────────────────────────────
+
+def store_payload(dimension: str):
+    """Decorator for the five dimension functions. After a successful run it saves the function's result
+    (a dict) to GCS as JSON with gcp_utils.upload_dimension_payload_cache_to_gcs:
+
+        gs://{GCS_BUCKET}/{PAYLOAD_PATH}/{drug}/{GCS_IP_SUBFOLDER}/{dimension}/output_payload.json
+        gs://{GCS_BUCKET}/{PAYLOAD_PATH}/{drug}/{GCS_IP_SUBFOLDER}/{dimension}/archived/output_payload_{timestamp}.json
+
+    A result with an "error" is not saved. A failed upload is logged by the uploader and never fails the run.
+    The saved URI is added to the result as "payload_uri" (None if the upload failed)."""
+    def decorator(run):
+        @functools.wraps(run)
+        async def wrapper(drug_name: str) -> dict:
+            from .gcp_utils import upload_dimension_payload_cache_to_gcs
+
+            result = await run(drug_name)
+            if isinstance(result, dict) and not result.get("error"):
+                result["payload_uri"] = await asyncio.to_thread(
+                    upload_dimension_payload_cache_to_gcs, result, result.get("drug_name") or drug_name, dimension)
+            return result
+        return wrapper
+    return decorator

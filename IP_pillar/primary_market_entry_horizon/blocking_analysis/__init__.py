@@ -4,11 +4,11 @@ blocking_analysis
 Multi-step patent blocking analysis, split into one module per step plus
 blocking_analysis.py (the orchestration layer). The public API is re-exported here so callers can do:
 
-    from IP_pillar.primary_market_entry_horizon.blocking_analysis import run_blocking_analysis, load_formulation_excel
+    from ip_pillar.primary_market_entry_horizon.blocking_analysis import run_blocking_analysis, load_formulation_excel
 
 Shared GCP calls (Gemini client, GCS cache) and config live in the parent
-IP_pillar package (gcp_utils.py / config.py); jurisdiction extraction
-comes from IP_pillar.utils.
+ip_pillar package (gcp_utils.py / config.py); jurisdiction extraction
+comes from ip_pillar.utils.
 """
 
 from ...utils import extract_jurisdiction

@@ -4,7 +4,7 @@ constants.py
 Analysis constants for the litigation dimension.
 
 Infrastructure settings (BigQuery table, Gemini model, the dimension's name) live in
-IP_pillar.config like every other dimension.
+ip_pillar.config like every other dimension.
 """
 
 # Patents searched per Gemini call. A smaller group means a shorter reply that is less likely to be truncated.

@@ -4,7 +4,7 @@ constants.py
 Analysis constants for the patent thicket / circumvention dimension.
 
 Infrastructure settings (BigQuery tables, Gemini model, GCS, the dimension's name)
-live in IP_pillar.config like every other dimension.
+live in ip_pillar.config like every other dimension.
 """
 
 # Categories left out of the thicket count (a composition-of-matter patent is a blocking patent, not a fence).

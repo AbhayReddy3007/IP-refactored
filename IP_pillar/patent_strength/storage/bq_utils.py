@@ -5,8 +5,8 @@ BigQuery I/O for the patent strength dimension:
     build_output_bigquery(...)       patent_strength_table + country score table;
                                      each run replaces only that drug's rows
 
-Shared reads/writes (glp_master_loe, replace-a-drug's-rows) are in IP_pillar/bq_utils.py.
-All BigQuery access goes through IP_pillar.gcp_helpers / gcp_utils; table IDs come from IP_pillar.config.
+Shared reads/writes (glp_master_loe, replace-a-drug's-rows) are in ip_pillar/bq_utils.py.
+All BigQuery access goes through ip_pillar.gcp_helpers / gcp_utils; table IDs come from ip_pillar.config.
 """
 
 import logging

@@ -5,7 +5,7 @@ Runs the whole IP Dimension process for a drug and derives, from its analysed
 patent list, how many years remain before a generic/biosimilar can realistically
 enter the market (years_to_entry), and the corresponding 1-5 scores.
 
-    from IP_pillar.primary_market_entry_horizon import calculate_scores, primary_market_entry_horizon
+    from ip_pillar.primary_market_entry_horizon import calculate_scores, primary_market_entry_horizon
 
     result  = await primary_market_entry_horizon("semaglutide")   # the full pipeline for one drug
     patents = calculate_scores(patents)                           # just the score calculations
@@ -20,7 +20,7 @@ calculation (ported from cog/):
     generate_report_and_rationale/ — the "Rationale" column of glp_master_loe + the PDF report built from it
 (the original callers — tools.py's two-pass orchestration, and agent.py,
 which has been removed — are superseded by primary_market_entry_horizon();
-run_ip_dimension.py at the top of the IP_pillar package picks the drugs.)
+run_ip_dimension.py at the top of the ip_pillar package picks the drugs.)
 """
 
 from .primary_market_entry_horizon import primary_market_entry_horizon

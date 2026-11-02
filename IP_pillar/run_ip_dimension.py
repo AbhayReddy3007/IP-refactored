@@ -13,9 +13,9 @@ through the IP dimensions selected by config.IP_DIMENSION (default: all):
     litigation_analysis()               patent_master -> patent litigation and court cases per patent -> its table
 
 Usage:
-    python -m IP_pillar.run_ip_dimension --drug Semaglutide
-    python -m IP_pillar.run_ip_dimension --drug Semaglutide --reindex
-    python -m IP_pillar.run_ip_dimension        # DRUG_NAME if set, else every GLP-1 drug (sharded on Cloud Run)
+    python -m ip_pillar.run_ip_dimension --drug Semaglutide
+    python -m ip_pillar.run_ip_dimension --drug Semaglutide --reindex
+    python -m ip_pillar.run_ip_dimension        # DRUG_NAME if set, else every GLP-1 drug (sharded on Cloud Run)
 
 On Cloud Run Jobs, set DRUG_NAME (one name or a comma-separated list) on the
 job instead of --drug; CLOUD_RUN_TASK_INDEX / CLOUD_RUN_TASK_COUNT split the
@@ -109,7 +109,7 @@ def get_dimension() -> str:
     return dimension
 
 
-async def run_drug(drug_name: str, reindex: bool = False) -> dict:
+async def run_drug(drug_name: str) -> dict:
     """Run the dimension(s) selected by config.IP_DIMENSION for one drug.
     patent_strength, patent_thicket_and_circumvention and global_launch_sequencing_and_geographic_arbitrage read the glp_master_loe rows
     primary_market_entry_horizon writes, so with "all" they run after it and are skipped
@@ -117,7 +117,7 @@ async def run_drug(drug_name: str, reindex: bool = False) -> dict:
     dimension = get_dimension()
     result: dict = {"drug_name": drug_name}
     if dimension in ("all", "primary_market_entry_horizon"):
-        result = await primary_market_entry_horizon(drug_name, reindex=reindex)
+        result = await primary_market_entry_horizon(drug_name)
         if result.get("error"):
             return result
 
@@ -125,7 +125,7 @@ async def run_drug(drug_name: str, reindex: bool = False) -> dict:
         if dimension not in ("all", name):
             continue
         try:
-            outcome = await run(drug_name, reset=reindex)
+            outcome = await run(drug_name)
         except Exception as e:
             logger.exception("[ERROR] %s failed for %s", name, drug_name)
             outcome = {"drug_name": drug_name, "error": str(e)}
@@ -137,7 +137,7 @@ async def run_drug(drug_name: str, reindex: bool = False) -> dict:
     return result
 
 
-async def run_shard(reindex: bool = False) -> dict:
+async def run_shard() -> dict:
     """Run the IP dimension(s) for every drug in this task's shard of the target list."""
     drugs = get_target_drugs()
     if not drugs:
@@ -149,7 +149,7 @@ async def run_shard(reindex: bool = False) -> dict:
     for i, drug_name in enumerate(shard, 1):
         logger.info("[PROGRESS] %d/%d: %s", i, len(shard), drug_name)
         try:
-            results.append(await run_drug(drug_name, reindex=reindex))
+            results.append(await run_drug(drug_name))
         except Exception as e:
             logger.exception("[ERROR] %s failed", drug_name)
             results.append({"drug_name": drug_name, "error": str(e), "patents": []})
@@ -170,6 +170,8 @@ def main() -> None:
                         help="Run one drug, overriding DRUG_NAME and discovery. On Cloud Run, set DRUG_NAME instead.")
     parser.add_argument("--reindex", action="store_true", help="Force re-indexing and re-analysis, ignoring caches.")
     args = parser.parse_args()
+    if args.reindex:
+        config.REINDEX = True  # the dimension functions take only the drug name; they read this
     get_dimension()  # fail fast on an invalid config.IP_DIMENSION
 
     setup_logging()
@@ -177,12 +179,12 @@ def main() -> None:
     logger.info("IP DIMENSION PIPELINE — task %d/%d", config.CLOUD_RUN_TASK_INDEX + 1, config.CLOUD_RUN_TASK_COUNT)
 
     if args.drug:
-        result = asyncio.run(run_drug(args.drug, reindex=args.reindex))
+        result = asyncio.run(run_drug(args.drug))
         failed = bool(result.get("error"))
         if failed:
             logger.error("[IP DIMENSION] %s", result["error"])
     else:
-        result = asyncio.run(run_shard(reindex=args.reindex))
+        result = asyncio.run(run_shard())
         failed = result["status"] == "error" or result.get("failed", 0) > 0
 
     elapsed = time.time() - t0

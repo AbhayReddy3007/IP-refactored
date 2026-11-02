@@ -18,7 +18,7 @@ Gemini usage (one row per model per drug run):
     append_gemini_stats_to_bigquery(drug, dimension, stats_by_model, run_status, ...)   (config.GEMINI_STATS_TABLE)
     save_gemini_stats(drug, dimension, run_status, error, elapsed)
 
-All BigQuery access goes through IP_pillar.gcp_helpers / gcp_utils; table IDs come from IP_pillar.config.
+All BigQuery access goes through ip_pillar.gcp_helpers / gcp_utils; table IDs come from ip_pillar.config.
 """
 
 import logging

@@ -19,7 +19,7 @@ config.INDEXER_CONCURRENCY. Progress is checkpointed to GCS (via
 gcp_utils) so a crashed run can resume without redoing completed patents.
 
 Usage:
-    from IP_pillar.indexer import indexer
+    from ip_pillar.indexer import indexer
 
     result = await indexer("Semaglutide")
 """
@@ -699,7 +699,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     drug = sys.argv[1] if len(sys.argv) > 1 else None
     if not drug:
-        print("Usage: python -m IP_pillar.indexer <drug_name> [--reindex]")
+        print("Usage: python -m ip_pillar.indexer <drug_name> [--reindex]")
         sys.exit(1)
     force_reindex = "--reindex" in sys.argv
     out = asyncio.run(indexer(drug, reindex=force_reindex))

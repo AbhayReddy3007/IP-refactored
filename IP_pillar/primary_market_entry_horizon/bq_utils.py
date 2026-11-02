@@ -14,10 +14,10 @@ Writes (the LOE output tables glp_patent_loe / glp_master_loe):
         prepare_table()        coerce columns to their BigQuery types, BigQuery-safe names
         bq_schema()            the explicit table schema
         export_table_json()    gs://{GCS_BUCKET}/{GCS_CACHE_PREFIX}/{GCS_JSON_EXPORT}/{table name}/{drug}_{run_ts}.json
-        write_table_to_bq()    delete the drug's previous rows (IP_pillar/delete_rows.py), then append — re-runs replace, not duplicate
+        write_table_to_bq()    delete the drug's previous rows (ip_pillar/delete_rows.py), then append — re-runs replace, not duplicate
 
-Reads of glp_master_loe and the Gemini usage rows are shared with the other dimensions: IP_pillar/bq_utils.py.
-All BigQuery / GCS access goes through IP_pillar.gcp_utils; table IDs come from IP_pillar.config.
+Reads of glp_master_loe and the Gemini usage rows are shared with the other dimensions: ip_pillar/bq_utils.py.
+All BigQuery / GCS access goes through ip_pillar.gcp_utils; table IDs come from ip_pillar.config.
 """
 
 import logging

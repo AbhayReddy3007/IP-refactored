@@ -18,7 +18,7 @@ patent_strength_table + patent_strength_country_score_table.
         pipeline.py    score cache + concurrent scoring
         constants.py   weights, labels, keyword lists
     storage/     where state and results are kept
-        bq_utils.py    BigQuery reads / writes specific to this dimension (shared ones: IP_pillar/bq_utils.py)
+        bq_utils.py    BigQuery reads / writes specific to this dimension (shared ones: ip_pillar/bq_utils.py)
         checkpoint.py  per-drug GCS checkpoint
 """
 

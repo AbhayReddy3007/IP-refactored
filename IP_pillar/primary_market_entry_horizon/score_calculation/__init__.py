@@ -10,7 +10,7 @@ Everything that produces or feeds the years-to-entry / score numbers.
     scoring.py               — master-table Years to Entry / Avg Years to Entry (US & EP) / IP Dimension 1 Score
     merge_forecasted_loe.py  — patents -> glp_patent_loe rows; merge with forecasted_loe and re-score -> glp_master_loe rows
 
-    from IP_pillar.primary_market_entry_horizon.score_calculation import calculate_scores
+    from ip_pillar.primary_market_entry_horizon.score_calculation import calculate_scores
 """
 
 from .approval_date_fetcher import fetch_approval_dates

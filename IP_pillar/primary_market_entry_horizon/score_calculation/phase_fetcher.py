@@ -13,7 +13,7 @@ Handles:
 No local Excel fallback — every phase comes from BigQuery
 (clinical_efficacy + the drug-list/drug_details view) only.
 
-Phase normalisation and jurisdiction tokens come from IP_pillar.utils
+Phase normalisation and jurisdiction tokens come from ip_pillar.utils
 (norm_phase / split_jurisdiction_tokens). This module adds the
 Drug_Geo_New-with-Drug_Geography fallback and the "highest-priority phase
 pooled across BOTH sources" merge rule (_pick_best_phase_multi).

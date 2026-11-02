@@ -1,7 +1,7 @@
 """
 bq_utils.py
 ───────────
-BigQuery tasks specific to the litigation dimension (shared ones: IP_pillar/bq_utils.py).
+BigQuery tasks specific to the litigation dimension (shared ones: ip_pillar/bq_utils.py).
 
 The litigation table (config.BQ_LITIGATION_TABLE) holds one row per case, and one row with no case for a
 patent that was searched and has none, so a patent is never searched twice.

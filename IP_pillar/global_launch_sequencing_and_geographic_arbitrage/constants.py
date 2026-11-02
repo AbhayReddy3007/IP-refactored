@@ -4,7 +4,7 @@ constants.py
 Analysis constants for the global launch sequencing and geographic arbitrage dimension.
 
 Infrastructure settings (BigQuery tables, Gemini model, the dimension's name) live in
-IP_pillar.config like every other dimension.
+ip_pillar.config like every other dimension.
 """
 
 # ── Shortlist filters ────────────────────────────────────────────────────────

@@ -21,7 +21,7 @@ All dates are stored as YYYY-MM-DD strings. Year-only values are still
 supported for backward compatibility (stored alongside the date fields).
 
 Usage:
-    from IP_pillar.primary_market_entry_horizon import calculate_scores
+    from ip_pillar.primary_market_entry_horizon import calculate_scores
 
     patents = calculate_scores(patents)
 """
@@ -599,7 +599,7 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) < 2:
-        print("Usage: python -m IP_pillar.primary_market_entry_horizon.score_calculation.patent_scores <patents.json>")
+        print("Usage: python -m ip_pillar.primary_market_entry_horizon.score_calculation.patent_scores <patents.json>")
         sys.exit(1)
 
     with open(sys.argv[1]) as f:

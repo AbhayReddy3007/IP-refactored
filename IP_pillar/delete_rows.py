@@ -19,7 +19,7 @@ looks it up in config.PATENT_MASTER_TABLE (read only — nothing is deleted
 there) and removes the output rows for those patents, matching patent numbers
 ignoring punctuation and case. Run it as a one-off sweep:
 
-    python -m IP_pillar.delete_rows [--drug Semaglutide]
+    python -m ip_pillar.delete_rows [--drug Semaglutide]
 
 The BigQuery DELETE itself goes through gcp_helpers.delete_rows.
 """

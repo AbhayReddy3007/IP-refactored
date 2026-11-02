@@ -16,11 +16,11 @@ Schema (auto-created / auto-migrated on first use):
         metadata    JSONB DEFAULT '{}'
     )
 
-All connection parameters come from IP_pillar.config (ALLOYDB_HOST,
+All connection parameters come from ip_pillar.config (ALLOYDB_HOST,
 ALLOYDB_PASSWORD, ALLOYDB_USER, ALLOYDB_DB, ALLOYDB_PORT, EMBEDDING_DIM).
 
 Usage:
-    from IP_pillar.alloydb_utils import alloydb_client
+    from ip_pillar.alloydb_utils import alloydb_client
 
     client = alloydb_client()
     collection = client.get_or_create_collection("patents_semaglutide")

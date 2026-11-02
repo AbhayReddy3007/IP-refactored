@@ -5,7 +5,7 @@ Scoring constants for the patent strength dimension: country weights, sub-factor
 weights and labels, and the section keyword lists used to re-rank chunks.
 
 Infrastructure settings (BigQuery tables, Gemini model, GCS) live in
-IP_pillar.config like every other dimension.
+ip_pillar.config like every other dimension.
 """
 
 # ── Concurrency / retrieval ───────────────────────────────────────────────────

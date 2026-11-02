@@ -1,10 +1,10 @@
 """
 bq_utils.py
 ───────────
-BigQuery tasks specific to the forecast_analysis dimension (shared ones: IP_pillar/bq_utils.py).
+BigQuery tasks specific to the forecast dimension (shared ones: ip_pillar/bq_utils.py).
 
 Reads:
-    load_patent_loe(drug)           one drug's glp_patent_loe rows (shared: IP_pillar/bq_utils.py)
+    load_patent_loe(drug)           one drug's glp_patent_loe rows (shared: ip_pillar/bq_utils.py)
     load_filing_pattern(drug)       the drug's rows from filing_pattern_table, if an earlier run wrote them
     load_company_analysis(company)  the company's row from company_analysis_table, if an earlier run wrote it
 

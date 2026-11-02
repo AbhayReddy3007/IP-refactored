@@ -7,7 +7,7 @@ the threshold) and writes the litigation table.
 
     litigation_analysis.py   litigation_analysis(drug) — the whole pipeline for one drug
     bq_utils.py              the litigation table: earlier rows read, this run's rows merged in and written
-                             (shared ones: IP_pillar/bq_utils.py)
+                             (shared ones: ip_pillar/bq_utils.py)
     constants.py             search sizes, temperatures and the case types
 
     retrieval/   what goes in

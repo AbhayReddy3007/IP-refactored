@@ -2,7 +2,7 @@
 config.py
 ─────────
 Single source of truth for all configuration values (environment variables,
-defaults, model names, tunables) used across the IP_pillar package.
+defaults, model names, tunables) used across the ip_pillar package.
 
 Every other module imports what it needs from here instead of calling
 os.getenv() directly. This keeps all configuration visible in one place and
@@ -58,6 +58,10 @@ GCS_IP_SUBFOLDER = os.getenv("GCS_IP_SUBFOLDER", "IP")
 #   gs://{REPORT_GCS_BUCKET}/{REPORT_GCS_PATH}/{drug}/{GCS_IP_SUBFOLDER}/archive/Primary Market Entry Horizon+{timestamp}.pdf
 REPORT_GCS_BUCKET = os.getenv("REPORT_GCS_BUCKET", "cognito-prod") or GCS_BUCKET
 REPORT_GCS_PATH   = os.getenv("REPORT_GCS_PATH", "Cognito_new/reports").strip("/")
+
+# Dimension output payloads (JSON, saved by utils.store_payload):
+#   gs://{GCS_BUCKET}/{PAYLOAD_PATH}/{drug}/{GCS_IP_SUBFOLDER}/{dimension}/output_payload.json
+PAYLOAD_PATH = os.getenv("PAYLOAD_PATH", "Cognito_new/pipeline_cache").strip("/")
 
 # Patent PDFs live under gs://{GCS_BUCKET}/{GCS_PATENTS_PREFIX}/{drug_name}/*.pdf
 GCS_PATENTS_PREFIX = os.getenv("GCS_PATENTS_PREFIX", "Cognito_new/Master_patent_list")
@@ -219,7 +223,7 @@ DATE_EXTRACTION_PDF_MAX_BYTES = int(os.getenv("DATE_EXTRACTION_PDF_MAX_BYTES", s
 #   gs://{GCS_BUCKET}/{GCS_CACHE_PREFIX}/{GCS_JSON_EXPORT}/{table name}/{drug}_{YYYYMMDD_HHMMSS}.json
 GCS_JSON_EXPORT = os.getenv("GCS_JSON_EXPORT", "loe_json_exports")
 
-# primary_market_entry_horizon() also runs forecast_analysis() for the drug, between publishing glp_patent_loe
+# primary_market_entry_horizon() also runs forecast() for the drug, between publishing glp_patent_loe
 # (its input) and building glp_master_loe (which merges the new forecasted_loe rows). Set to false to skip it.
 RUN_FORECAST = os.getenv("RUN_FORECAST", "true").strip().lower() not in ("0", "false", "no", "off")
 
@@ -230,7 +234,11 @@ RUN_FORECAST = os.getenv("RUN_FORECAST", "true").strip().lower() not in ("0", "f
 #   patent_thicket_and_circumvention — only that dimension (needs the drug's glp_master_loe rows)
 #   global_launch_sequencing_and_geographic_arbitrage — only that dimension (needs the drug's glp_master_loe rows)
 #   litigations                      — only that dimension (reads patent_master)
-IP_DIMENSION = os.getenv("IP_DIMENSION", "litigations").strip().lower()
+IP_DIMENSION = os.getenv("IP_DIMENSION", "all").strip().lower()
+
+# True = ignore caches / checkpoints and redo everything (re-index, re-analyse, re-score). The five dimension
+# functions take only the drug name, so this is read from here; run_ip_dimension --reindex sets it.
+REINDEX = os.getenv("REINDEX", "false").strip().lower() in ("1", "true", "yes")
 
 # Rationale of a drug that has no patents for a dimension to assess (patent_strength, patent_thicket_and_circumvention).
 NO_QUALIFYING_PATENTS_RATIONALE = (
@@ -303,14 +311,14 @@ BQ_THICKET_SCORE_TABLE  = os.getenv("BQ_THICKET_SCORE_TABLE", "cognito-prod-3947
 BQ_LAUNCH_PATENTS_TABLE = os.getenv("BQ_LAUNCH_PATENTS_TABLE", "cognito-prod-394707.cognito_prod_datamart.shortlisted_secondary_patents_table")
 BQ_ARBITRAGE_TABLE      = os.getenv("BQ_ARBITRAGE_TABLE", "cognito-prod-394707.cognito_prod_datamart.arbitrage_summary_table")
 
-# forecast_analysis(): reads glp_patent_loe, writes forecasted_loe (FORECASTED_LOE_TABLE above), which the
+# forecast(): reads glp_patent_loe, writes forecasted_loe (FORECASTED_LOE_TABLE above), which the
 # next primary_market_entry_horizon run merges into glp_master_loe.
 #   forecast_s3          — patent layering + filing-stage table (steps 1-3), one row per patent
 #   filing_pattern_table — innovator filing patterns (step 4), one row per innovator
 #   company_analysis_table — the company's business-strategy / patent-expansion incentive (step 5)
-# Retries (after the first attempt) of a drug's innovator filing-pattern analysis in forecast_analysis().
+# Retries (after the first attempt) of a drug's innovator filing-pattern analysis in forecast().
 FORECAST_MAX_RETRIES = int(os.getenv("FORECAST_MAX_RETRIES", "1"))
-# Drug -> parent company (columns cleaned_generic_name, Parent_Company_Name, Drug_Geography) used by forecast_analysis();
+# Drug -> parent company (columns cleaned_generic_name, Parent_Company_Name, Drug_Geography) used by forecast();
 # defaults to the drug list view. If the lookup fails the company is found by a Gemini web search.
 DRUG_COMPANY_TABLE = os.getenv("DRUG_COMPANY_TABLE") or os.getenv("BQ_TABLE_NAME") or DRUG_LIST_VIEW
 BQ_FORECAST_S3_TABLE      = os.getenv("BQ_FORECAST_S3_TABLE", "cognito-prod-394707.cognito_prod_datamart.forecast_s3")

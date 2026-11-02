@@ -17,8 +17,8 @@ RUN apt-get update && \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY IP_pillar ./IP_pillar
+COPY ip_pillar ./ip_pillar
 
 # DRUG_NAME set   -> runs only that drug (or comma-separated list)
 # DRUG_NAME unset -> every GLP-1 drug, sharded across Cloud Run tasks
-ENTRYPOINT ["python", "-m", "IP_pillar.run_ip_dimension"]
+ENTRYPOINT ["python", "-m", "ip_pillar.run_ip_dimension"]

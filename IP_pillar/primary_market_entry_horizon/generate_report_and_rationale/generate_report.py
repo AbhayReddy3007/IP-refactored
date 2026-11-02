@@ -13,9 +13,9 @@ Per drug:
          {drug}/{GCS_IP_SUBFOLDER}/archive/Primary Market Entry Horizon+{timestamp}.pdf
 
 Usage:
-    python -m IP_pillar.primary_market_entry_horizon.generate_report_and_rationale.generate_report
-    python -m IP_pillar.primary_market_entry_horizon.generate_report_and_rationale.generate_report --drug "Semaglutide, Tirzepatide"
-    python -m IP_pillar.primary_market_entry_horizon.generate_report_and_rationale.generate_report -o ./reports --no-upload
+    python -m ip_pillar.primary_market_entry_horizon.generate_report_and_rationale.generate_report
+    python -m ip_pillar.primary_market_entry_horizon.generate_report_and_rationale.generate_report --drug "Semaglutide, Tirzepatide"
+    python -m ip_pillar.primary_market_entry_horizon.generate_report_and_rationale.generate_report -o ./reports --no-upload
 """
 
 import argparse

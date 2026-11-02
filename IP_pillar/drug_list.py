@@ -10,19 +10,19 @@ Drug names are matched case-insensitively (patent_filter() already does
 this), but every name this module returns or prints keeps the spelling of
 `cleaned_generic_name` (e.g. "Bgm-0504").
 
-All BigQuery / GCS access goes through IP_pillar.gcp_utils; all
-configuration (project, dataset) comes from IP_pillar.config.
+All BigQuery / GCS access goes through ip_pillar.gcp_utils; all
+configuration (project, dataset) comes from ip_pillar.config.
 
 Usage:
-    from IP_pillar.drug_list import drug_list, list_glp1_patent_files
+    from ip_pillar.drug_list import drug_list, list_glp1_patent_files
 
     drugs         = drug_list()        # ["liraglutide", "semaglutide", ...]
     files_by_drug = list_glp1_patent_files()      # {"semaglutide": [{"filename": ..., "blob_name": ...}, ...], ...}
 
 CLI:
-    python -m IP_pillar.drug_list                       # list every GLP-1 drug's patent files in GCS
-    python -m IP_pillar.drug_list --align               # rewrite Drug Name in the LOE tables to the drug list's spelling
-    python -m IP_pillar.drug_list --align --drug Bgm-0504
+    python -m ip_pillar.drug_list                       # list every GLP-1 drug's patent files in GCS
+    python -m ip_pillar.drug_list --align               # rewrite Drug Name in the LOE tables to the drug list's spelling
+    python -m ip_pillar.drug_list --align --drug Bgm-0504
 """
 
 import argparse

@@ -26,7 +26,7 @@ from .config import (
     GCS_BUCKET,
     GCS_CACHE_PREFIX,
     GCS_IP_SUBFOLDER,
-    GCS_PIPELINE_CACHE_BASE_PATH,
+    PAYLOAD_PATH,
     GCS_REPORT_BASE_PATH,
     GOOGLE_APPLICATION_CREDENTIALS,
     PROJECT_ID,
@@ -277,7 +277,7 @@ def upload_dimension_payload_cache_to_gcs(
         client = get_gcs_client()
         bucket = client.bucket(GCS_BUCKET)
 
-        cache_root = GCS_PIPELINE_CACHE_BASE_PATH
+        cache_root = PAYLOAD_PATH
         main_gcs_path = f"{cache_root}/{molecule}/{pillar}/{dimension}/output_payload.json"
         payload_bytes = json.dumps(payload, indent=2, default=str).encode("utf-8")
 

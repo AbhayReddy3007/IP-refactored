@@ -8,12 +8,12 @@ sitting in GCS that isn't approved for this molecule in patent_master is
 excluded — so indexing, blocking analysis, and the output tables downstream
 all only ever see this approved set. No downloading here — metadata only.
 
-All GCS/BigQuery access goes through IP_pillar.gcp_utils; all
+All GCS/BigQuery access goes through ip_pillar.gcp_utils; all
 configuration (bucket name, patents prefix, patent_master table) comes
-from IP_pillar.config.
+from ip_pillar.config.
 
 Usage:
-    from IP_pillar.patent_filter import patent_filter, get_approved_patent_numbers
+    from ip_pillar.patent_filter import patent_filter, get_approved_patent_numbers
 
     refs = patent_filter("BGM-0504")
     # -> [{"filename": "US1234567.pdf", "blob_name": "patents/BGM-0504/US1234567.pdf"}, ...]
@@ -243,8 +243,8 @@ if __name__ == "__main__":
     import sys
     logging.basicConfig(level=logging.INFO)
     if len(sys.argv) < 2:
-        print("Usage: python -m IP_pillar.patent_filter <drug_name>")
-        print("       python -m IP_pillar.patent_filter --all   (approved patent numbers, every molecule)")
+        print("Usage: python -m ip_pillar.patent_filter <drug_name>")
+        print("       python -m ip_pillar.patent_filter --all   (approved patent numbers, every molecule)")
         sys.exit(1)
     if sys.argv[1] == "--all":
         for pn in get_approved_patent_numbers():

@@ -23,7 +23,7 @@ found for its patents.
 Input is patent_master only; it does not depend on primary_market_entry_horizon.
 
 Usage:
-    from IP_pillar.litigations import litigation_analysis
+    from ip_pillar.litigations import litigation_analysis
 
     result = await litigation_analysis("semaglutide")
 """
@@ -37,8 +37,9 @@ from .. import config
 from ..bq_utils import save_gemini_stats
 from ..drug_list import resolve_drug_name
 from ..gemini_utils import reset_gemini_call_stats
-from ..utils import normalize_patent_number
+from ..utils import normalize_patent_number, store_payload
 from .bq_utils import build_rows, load_existing_rows, merge_case_rows, write_litigation
+from .litigation_helpers import generate_report
 from .retrieval import get_patents, is_marketed_drug
 from .search import (
     build_summary,
@@ -52,32 +53,17 @@ from .search import (
 logger = logging.getLogger(__name__)
 
 
-def _generate_report(drug: str, rows: list) -> dict:
-    """Build and upload the dimension's report; {"error": ...} if it fails."""
-    if not rows:
-        return {"skipped": "no patents", "gcs_uri": None, "archive_uri": None}
-    # Imported here so reportlab is only needed when a report is built.
-    from .generate_report.generate_report import report_for_drug
-
-    logger.info("[LITIGATION] Generating the %s report ...", config.DIMENSION_LITIGATION)
-    try:
-        report = report_for_drug(drug, rows)
-    except Exception as e:
-        logger.exception("[LITIGATION] Report failed for %r", drug)
-        return {"error": str(e), "gcs_uri": None, "archive_uri": None}
-    logger.info("[LITIGATION] Report -> %s", report["gcs_uri"])
-    return report
-
-
-async def litigation_analysis(drug_name: str, reset: bool = False) -> dict:
+@store_payload(config.DIMENSION_LITIGATION)
+async def litigation_analysis(drug_name: str) -> dict:
     """
     Litigation pipeline for ONE drug, plus a Gemini usage row per model in config.GEMINI_STATS_TABLE
     (written even when the run fails).
 
+    The drug name is the only input. Patents already in the litigation table are never searched again;
+    delete a patent's rows from the table to search it again.
+
     Args:
         drug_name: Drug name; resolved to the drug list's spelling and used for every output.
-        reset:     Accepted so the runner can call every dimension alike. Patents already in the litigation
-                   table are never searched again; delete a patent's rows from the table to search it again.
 
     Returns:
         {"drug_name", "patents", "patents_searched", "patents_skipped", "total_cases", "cases_by_type",
@@ -91,79 +77,73 @@ async def litigation_analysis(drug_name: str, reset: bool = False) -> dict:
     drug = resolve_drug_name(drug_name)
     run_status, error = "success", None
     try:
-        result = await _run(drug, t0)
-        if result.get("error"):
-            run_status, error = "failed", result["error"]
-        return result
+        logger.info("%s\n[LITIGATION] Starting for: %s\n%s", "=" * 60, drug, "=" * 60)
+
+        # Step 1: patent_master -> the drug's patents that are not in the litigation table yet
+        patents, filing_dates = await asyncio.to_thread(get_patents, drug)
+        if not patents:
+            run_status = "failed"
+            error = (f"No patents for '{drug}' in {config.PATENT_MASTER_TABLE} "
+                     f"with confidence > {config.PATENT_CONFIDENCE_THRESHOLD}.")
+            return {"drug_name": drug, "error": error}
+        existing = await asyncio.to_thread(load_existing_rows, drug)
+        searched_before = {normalize_patent_number(row["patent_number"]) for row in existing if row.get("patent_number")}
+        pending = [p for p in patents if normalize_patent_number(p) not in searched_before]
+        logger.info("[LITIGATION] %s | %d patent(s): %d already in the table, %d to search",
+                    drug, len(patents), len(patents) - len(pending), len(pending))
+
+        base = {"drug_name": drug, "patents": len(patents), "patents_searched": 0,
+                "patents_skipped": len(patents) - len(pending), "output_tables": []}
+        if not pending:
+            report = await asyncio.to_thread(generate_report, drug, existing)
+            return {**base, "total_cases": sum(1 for row in existing if row.get("case_type")),
+                    "processing_time_seconds": round(time.time() - t0, 1), "report": report}
+
+        # Step 2: innovator, and brand names for a Marketed drug
+        marketed = await asyncio.to_thread(is_marketed_drug, drug)
+        brand_names, innovator = await get_brand_and_innovator(drug, marketed)
+
+        # Step 3: litigation search
+        raw, failed_patents = await search_litigations(pending, drug, innovator)
+        logger.info("[LITIGATION] %s | %d raw case(s) across %d patent(s)", drug, len(raw), len(pending))
+
+        # Step 4: de-duplicate, group, summarise (over the earlier cases too, as the totals cover the drug)
+        new_cases = deduplicate_litigations(raw)
+        searched = [p for p in pending if p not in failed_patents]    # a patent whose reply failed is searched again next run
+        case_rows = merge_case_rows(existing, new_cases, searched)
+        all_cases = [row for row in case_rows if row.get("case_type")]
+        cases_by_type = group_by_type(all_cases)
+        challengers = unique_challengers(all_cases)
+
+        # Step 5: BigQuery
+        elapsed = round(time.time() - t0, 1)
+        summary = build_summary(all_cases, cases_by_type)
+        rows = build_rows(drug, case_rows, summary, innovator, brand_names,
+                          filing_dates, date.today().isoformat(), elapsed)
+        rows_written = await asyncio.to_thread(write_litigation, drug, rows)
+
+        # Step 6: the dimension's PDF report, from the drug's rows. A failed report is recorded in the result but
+        # does not fail the run.
+        report = await asyncio.to_thread(generate_report, drug, rows)
+
+        logger.info("[LITIGATION] Done in %.1fs - %d new case(s), %d case(s) in all, %d row(s) written",
+                    elapsed, len(new_cases), len(all_cases), rows_written)
+        return {
+            **base,
+            "innovator":               innovator,
+            "brand_names":             brand_names,
+            "patents_searched":        len(searched),
+            "total_cases":             len(all_cases),
+            "cases_by_type":           {case_type: len(cases) for case_type, cases in cases_by_type.items()},
+            "unique_challengers":      len(challengers),
+            "failed_patents":          failed_patents,
+            "summary":                 summary,
+            "processing_time_seconds": elapsed,
+            "output_tables":           [config.BQ_LITIGATION_TABLE],
+            "report":                  report,
+        }
     except Exception as e:
         run_status, error = "failed", str(e)
         raise
     finally:
         save_gemini_stats(drug, config.DIMENSION_LITIGATION, run_status, error, time.time() - t0)
-
-
-async def _run(drug: str, t0: float) -> dict:
-    logger.info("%s\n[LITIGATION] Starting for: %s\n%s", "=" * 60, drug, "=" * 60)
-
-    # Step 1: patent_master -> the drug's patents that are not in the litigation table yet
-    patents, filing_dates = await asyncio.to_thread(get_patents, drug)
-    if not patents:
-        return {"drug_name": drug,
-                "error": f"No patents for '{drug}' in {config.PATENT_MASTER_TABLE} "
-                         f"with confidence > {config.PATENT_CONFIDENCE_THRESHOLD}."}
-    existing = await asyncio.to_thread(load_existing_rows, drug)
-    searched_before = {normalize_patent_number(row["patent_number"]) for row in existing if row.get("patent_number")}
-    pending = [p for p in patents if normalize_patent_number(p) not in searched_before]
-    logger.info("[LITIGATION] %s | %d patent(s): %d already in the table, %d to search",
-                drug, len(patents), len(patents) - len(pending), len(pending))
-
-    base = {"drug_name": drug, "patents": len(patents), "patents_searched": 0,
-            "patents_skipped": len(patents) - len(pending), "output_tables": []}
-    if not pending:
-        report = await asyncio.to_thread(_generate_report, drug, existing)
-        return {**base, "total_cases": sum(1 for row in existing if row.get("case_type")),
-                "processing_time_seconds": round(time.time() - t0, 1), "report": report}
-
-    # Step 2: innovator, and brand names for a Marketed drug
-    marketed = await asyncio.to_thread(is_marketed_drug, drug)
-    brand_names, innovator = await get_brand_and_innovator(drug, marketed)
-
-    # Step 3: litigation search
-    raw, failed_patents = await search_litigations(pending, drug, innovator)
-    logger.info("[LITIGATION] %s | %d raw case(s) across %d patent(s)", drug, len(raw), len(pending))
-
-    # Step 4: de-duplicate, group, summarise (over the earlier cases too, as the totals cover the drug)
-    new_cases = deduplicate_litigations(raw)
-    searched = [p for p in pending if p not in failed_patents]    # a patent whose reply failed is searched again next run
-    case_rows = merge_case_rows(existing, new_cases, searched)
-    all_cases = [row for row in case_rows if row.get("case_type")]
-    cases_by_type = group_by_type(all_cases)
-    challengers = unique_challengers(all_cases)
-
-    # Step 5: BigQuery
-    elapsed = round(time.time() - t0, 1)
-    summary = build_summary(all_cases, cases_by_type)
-    rows = build_rows(drug, case_rows, summary, innovator, brand_names,
-                      filing_dates, date.today().isoformat(), elapsed)
-    rows_written = await asyncio.to_thread(write_litigation, drug, rows)
-
-    # Step 6: the dimension's PDF report, from the drug's rows. A failed report is recorded in the result but
-    # does not fail the run.
-    report = await asyncio.to_thread(_generate_report, drug, rows)
-
-    logger.info("[LITIGATION] Done in %.1fs - %d new case(s), %d case(s) in all, %d row(s) written",
-                elapsed, len(new_cases), len(all_cases), rows_written)
-    return {
-        **base,
-        "innovator":               innovator,
-        "brand_names":             brand_names,
-        "patents_searched":        len(searched),
-        "total_cases":             len(all_cases),
-        "cases_by_type":           {case_type: len(cases) for case_type, cases in cases_by_type.items()},
-        "unique_challengers":      len(challengers),
-        "failed_patents":          failed_patents,
-        "summary":                 summary,
-        "processing_time_seconds": elapsed,
-        "output_tables":           [config.BQ_LITIGATION_TABLE],
-        "report":                  report,
-    }

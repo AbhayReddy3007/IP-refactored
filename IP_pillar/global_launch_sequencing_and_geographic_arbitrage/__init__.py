@@ -6,7 +6,7 @@ geographic arbitrage the differences in expiry allow. Reads glp_master_loe (the 
 primary_market_entry_horizon) and writes shortlisted_secondary_patents_table + arbitrage_summary_table.
 
     global_launch_sequencing_and_geographic_arbitrage.py   the pipeline for one drug
-    bq_utils.py     BigQuery reads / writes specific to this dimension (shared ones: IP_pillar/bq_utils.py)
+    bq_utils.py     BigQuery reads / writes specific to this dimension (shared ones: ip_pillar/bq_utils.py)
     filters.py      shortlist: target jurisdictions, granted, BLOCKING, key claim categories
     approval.py     earliest approval date per jurisdiction (Gemini, two-pass)
     pte.py          patent term extension per patent (Gemini)
