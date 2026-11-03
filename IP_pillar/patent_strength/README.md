@@ -33,6 +33,30 @@ Input is the drug's `glp_master_loe` rows, so run `primary_market_entry_horizon`
 
 If no patent passes the shortlist, the run returns a fixed "no qualifying patents" rationale and writes nothing.
 
+## Folder structure
+
+```
+patent_strength/
+├── patent_strength_analysis.py     the dimension function, nothing else
+├── strength_helpers.py             log summaries, report builder
+├── retrieval/
+│   ├── shortlist.py                which glp_master_loe patents are scored
+│   └── chunks.py                   AlloyDB chunks, re-ranked per sub-factor
+├── scoring/
+│   ├── scoring.py                  Gemini sub-factor scoring, weighted and country scores
+│   ├── prompts.py                  the sub-factor prompts
+│   ├── pipeline.py                 score cache and concurrent scoring
+│   └── constants.py                weights, labels, keyword lists
+├── storage/
+│   ├── bq_utils.py                 this dimension's BigQuery reads and writes
+│   └── checkpoint.py               per-drug GCS checkpoint
+└── generate_report_and_rationale/
+    ├── generate_rationale.py       the drug's short rationale
+    └── generate_report.py          the PDF report
+```
+
+Each folder also has an `__init__.py`.
+
 ## Files
 
 | Path | Role |

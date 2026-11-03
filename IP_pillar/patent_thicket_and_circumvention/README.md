@@ -28,6 +28,28 @@ Input is the drug's `glp_master_loe` rows, so run `primary_market_entry_horizon`
 
 If the drug has no NON-BLOCKING patents, the run returns a fixed "no qualifying patents" rationale.
 
+## Folder structure
+
+```
+patent_thicket_and_circumvention/
+├── patent_thicket_circumvention_analysis.py   the dimension function, nothing else
+├── thicket_helpers.py                         the report builder
+├── bq_utils.py                                BigQuery writes for this dimension
+├── retrieval/
+│   └── data_prep.py                           claim categories, NON-BLOCKING selection
+├── scoring/
+│   ├── scoring.py                             density, diversity, final thicket score
+│   ├── circumvention.py                       design-around analysis per claim category
+│   ├── prompts.py                             the Gemini prompts
+│   ├── checkpoint.py                          per-drug GCS cache of finished categories
+│   └── constants.py                           excluded categories, limits, concurrency
+└── generate_report_and_rationale/
+    ├── generate_rationale.py                  summary of the scores and the analysis
+    └── generate_report.py                     the PDF report
+```
+
+Each folder also has an `__init__.py`.
+
 ## Files
 
 | Path | Role |

@@ -24,6 +24,28 @@ Unlike the other dimensions it reads **`patent_master`** (patents with confidenc
 
 If `patent_master` has no patents above the threshold for the drug, the run returns an error.
 
+## Folder structure
+
+```
+litigations/
+├── litigation_analysis.py      the dimension function, nothing else
+├── litigation_helpers.py       the report builder
+├── bq_utils.py                 read earlier rows, build and merge rows, write the table
+├── constants.py                search sizes, temperatures, case types and aliases
+├── retrieval/
+│   ├── patents.py              the drug's patents and filing dates from patent_master
+│   └── marketed.py             whether the drug is Marketed
+├── search/
+│   ├── steps.py                innovator / brand lookup, grouped litigation search
+│   ├── results.py              normalise, de-duplicate, group, summarise
+│   ├── prompts.py              the Gemini prompts
+│   └── json_utils.py           tolerant parsing of Gemini JSON
+└── generate_report/
+    └── generate_report.py      the two-page PDF report
+```
+
+Each folder also has an `__init__.py`.
+
 ## Files
 
 | Path | Role |

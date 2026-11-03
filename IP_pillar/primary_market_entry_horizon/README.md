@@ -72,6 +72,44 @@ patents. Input `glp_patent_loe`; output `forecasted_loe`.
 folder has a `<folder>.py` that can be run on its own, for example
 `python -m ip_pillar.primary_market_entry_horizon.forecast.strategy_analysis.strategy_analysis`.
 
+## Folder structure
+
+```
+primary_market_entry_horizon/
+├── primary_market_entry_horizon.py     the dimension function, nothing else
+├── horizon_helpers.py                  LOE-table publishing, forecast step, the two reports
+├── bq_utils.py                         BigQuery reads; LOE table writes + JSON snapshot
+├── blocking_analysis/
+│   ├── blocking_analysis.py            runs the five steps over all patents
+│   ├── step1_claim_classification.py
+│   ├── step2_claim_elements.py
+│   ├── step3_scientific_barrier.py
+│   ├── step4_development_feasibility.py
+│   ├── step5_novelty_difficulty.py
+│   └── generate_report.py              Blocking Analysis PDF
+├── score_calculation/
+│   ├── patent_scores.py                years to entry and the 1-5 scores
+│   ├── phase_fetcher.py                clinical phase, phase at filing
+│   ├── approval_date_fetcher.py        FDA / EMA approval dates
+│   ├── scoring.py                      glp_master_loe scoring
+│   └── merge_forecasted_loe.py         glp_patent_loe rows; merge into glp_master_loe
+├── forecast/
+│   ├── forecast.py                     forecast(): the orchestrator
+│   ├── forecast_helpers.py             what forecast() calls
+│   ├── bq_utils.py                     forecast tables: reads and writes
+│   ├── patent_layering/                IP landscape, layering, filing stage -> forecast_s3
+│   ├── patern_analysis/                innovator filing pattern -> filing_pattern_table
+│   ├── strategy_analysis/              company business strategy -> company_analysis_table
+│   ├── forecast_pipeline/              Gemini forecast and scoring -> forecasted_loe
+│   └── generate_report/                Forecast Analysis PDF
+└── generate_report_and_rationale/
+    ├── generate_rationale.py           the Rationale column of glp_master_loe
+    └── generate_report.py              Primary Market Entry Horizon PDF
+```
+
+Each folder also has an `__init__.py`. The four forecast analysis folders each hold several modules plus a
+`<folder>.py` that runs it from the command line.
+
 ## Files in this folder
 
 | File | Role |

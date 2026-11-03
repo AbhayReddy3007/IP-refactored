@@ -36,6 +36,30 @@ Input is the drug's `glp_master_loe` rows, so run `primary_market_entry_horizon`
 
 If no patent passes the shortlist, the run returns a fixed "no qualifying patents" rationale.
 
+## Folder structure
+
+```
+global_launch_sequencing_and_geographic_arbitrage/
+├── global_launch_sequencing_and_geographic_arbitrage.py   the dimension function, nothing else
+├── launch_helpers.py                                      the two-report builder
+├── bq_utils.py                                            this dimension's BigQuery reads and writes
+├── filters.py                                             shortlist: jurisdictions, granted, BLOCKING, key categories
+├── approval.py                                            earliest approval date per jurisdiction
+├── pte.py                                                 patent term extension per patent
+├── expiry.py                                              expiry: filing + 20 years, PTE, post-approval cap
+├── arbitrage.py                                           launch order, gaps, 1-5 score, Dimension IV score
+├── lookups.py                                             concurrent Gemini lookups
+├── constants.py                                           jurisdictions, filters, PTE rules, columns
+└── generate_report_and_rationale/
+    ├── generate_rationale.py                              summary of launch order and arbitrage
+    └── generate_report/
+        ├── generate_dim4_report.py                        Global Launch Sequencing & Arbitrage PDF
+        ├── generate_pte_report.py                         PTE Analysis PDF
+        └── utils.py                                       shared report helpers
+```
+
+Each folder also has an `__init__.py`.
+
 ## Files
 
 | Path | Role |
