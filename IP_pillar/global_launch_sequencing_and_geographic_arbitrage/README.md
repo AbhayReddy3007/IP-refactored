@@ -59,6 +59,4 @@ If no patent passes the shortlist, the run returns a fixed "no qualifying patent
 
 Each run replaces only that drug's rows.
 
-## Needs
 
-BigQuery, GCS and Vertex AI Gemini. Settings are in `ip_pillar/config.py`.

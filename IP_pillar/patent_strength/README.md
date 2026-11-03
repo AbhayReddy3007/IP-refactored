@@ -56,7 +56,4 @@ If no patent passes the shortlist, the run returns a fixed "no qualifying patent
 
 Each run replaces only that drug's rows.
 
-## Needs
 
-BigQuery, GCS, AlloyDB (the chunks `primary_market_entry_horizon` indexed) and Vertex AI Gemini. Settings are in
-`ip_pillar/config.py`; scoring constants are in `scoring/constants.py`.

@@ -97,7 +97,3 @@ folder has a `<folder>.py` that can be run on its own, for example
 
 Each run replaces only that drug's rows.
 
-## Needs
-
-AlloyDB (embeddings), Vertex AI Gemini, BigQuery, GCS, and outbound HTTPS (FDA, EMA, PubMed, Europe PMC, SEC EDGAR).
-Settings are in `ip_pillar/config.py`; see the root `README.md`.

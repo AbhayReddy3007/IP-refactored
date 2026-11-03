@@ -51,6 +51,4 @@ If the drug has no NON-BLOCKING patents, the run returns a fixed "no qualifying 
 
 Each run replaces only that drug's rows.
 
-## Needs
 
-BigQuery, GCS, AlloyDB and Vertex AI Gemini with Google Search grounding. Settings are in `ip_pillar/config.py`.

@@ -44,6 +44,3 @@ If `patent_master` has no patents above the threshold for the drug, the run retu
 | Report | `gs://{REPORT_GCS_BUCKET}/{REPORT_GCS_PATH}/{drug}/IP/Litigation Analysis.pdf` (+ `archive/`) |
 | Run payload | `gs://{GCS_BUCKET}/{PAYLOAD_PATH}/{drug}/IP/Litigation Analysis/output_payload.json` |
 
-## Needs
-
-BigQuery, GCS and Vertex AI Gemini with Google Search grounding. Settings are in `ip_pillar/config.py`.

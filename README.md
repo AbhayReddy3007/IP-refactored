@@ -63,13 +63,13 @@ python -m ip_pillar.run_ip_dimension                                 # every GLP
 
 - **Which dimension:** `IP_DIMENSION` is `all`, `primary_market_entry_horizon`, `patent_strength`,
   `patent_thicket_and_circumvention`, `global_launch_sequencing_and_geographic_arbitrage` or `litigations`.
-  **The default in `config.py` is `litigations`**, so set it to `all` to run everything.
+  The default is `all`.
 - **Which drugs:** `--drug`, then `DRUG_NAME` (comma-separated list allowed), otherwise every GLP-1 drug found in GCS.
 - **Sharding:** on Cloud Run Jobs, `CLOUD_RUN_TASK_INDEX` and `CLOUD_RUN_TASK_COUNT` deal the drug list out across tasks.
 - **Reindex:** `--reindex` sets `config.REINDEX` (or set `REINDEX=true`); the dimension functions read it.
 - **Exit code:** 0 if every drug succeeded, 1 if any failed. One drug's failure does not stop the others.
 
-Step-by-step VM setup (service account roles, `.env`, AlloyDB, logging) is in
+Run options and outputs for a VM are in
 [`docs/RUN_ON_LINUX_VM.md`](docs/RUN_ON_LINUX_VM.md). Docker: `docker build -t ip-pillar .` (the entrypoint is
 `python -m ip_pillar.run_ip_dimension`; on Cloud Run the job's service account is used, so leave
 `GOOGLE_APPLICATION_CREDENTIALS` unset).
@@ -92,34 +92,31 @@ All settings are environment variables read in `ip_pillar/config.py` (`.env` is 
 | `IP_DIMENSION`, `DRUG_NAME`, `REINDEX`, `RUN_FORECAST` | what to run and how |
 | `ANALYSIS_CONCURRENCY`, `INDEXER_CONCURRENCY` | parallelism |
 
-## Layout
+## File structure
 
 ```
-ip_pillar/
-  run_ip_dimension.py                  entry point: picks the drugs, runs the dimensions
-  config.py                            every setting
-  utils.py                             shared pure helpers, plus the store_payload decorator
-  gcp_utils.py, gcp_helpers.py         GCS, BigQuery and Gemini calls
-  bq_utils.py                          shared BigQuery reads/writes (glp_master_loe, replace-a-drug's-rows, Gemini stats)
-  gemini_utils.py                      Vertex AI Gemini calls, retries, usage counters
-  alloydb_utils.py, indexer.py         AlloyDB storage; PDF text extraction, chunking, embedding
-  patent_filter.py, drug_list.py       which patents and drugs to process
-  master_loe.py, dates.py              glp_master_loe as the dimensions read it; patent date extraction
-  report_utils.py                      shared ReportLab layout and the GCS report upload
-  primary_market_entry_horizon/        dimension 1 (blocking_analysis/, forecast/, score_calculation/)
-  patent_strength/                     dimension 2
-  patent_thicket_and_circumvention/    dimension 3
-  global_launch_sequencing_and_geographic_arbitrage/   dimension 4
-  litigations/                         dimension 5
-docs/RUN_ON_LINUX_VM.md                VM setup and operations guide
-Dockerfile, pyproject.toml, requirements.txt, .env.example
+IP-refactored/
+├── README.md                      this file
+├── Dockerfile                     Cloud Run Jobs image
+├── pyproject.toml                 package metadata and the run-ip-dimension command
+├── requirements.txt               dependencies
+├── .env.example                   template for .env
+├── docs/
+│   └── RUN_ON_LINUX_VM.md         running on a VM: options, outputs
+└── ip_pillar/                     the package (shared helpers: ip_pillar/README.md)
+    ├── run_ip_dimension.py        entry point
+    ├── config.py                  every setting
+    ├── utils.py, gcp_utils.py, gcp_helpers.py, bq_utils.py, gemini_utils.py,
+    │   alloydb_utils.py, indexer.py, dates.py, drug_list.py, patent_filter.py,
+    │   master_loe.py, report_utils.py, delete_rows.py        shared helpers
+    ├── primary_market_entry_horizon/                       dimension 1
+    ├── patent_strength/                                    dimension 2
+    ├── patent_thicket_and_circumvention/                   dimension 3
+    ├── global_launch_sequencing_and_geographic_arbitrage/  dimension 4
+    └── litigations/                                        dimension 5
 ```
 
-The shared helper modules and each dimension's own helper file are described in [`ip_pillar/README.md`](ip_pillar/README.md).
-
-Every dimension follows the same shape: one file holding only the dimension function, a `*_helpers.py` for what it
-calls, then `retrieval/`, `scoring/` (or `search/`), `storage/` or `bq_utils.py`, `constants.py` and
-`generate_report_and_rationale/`.
+Each dimension folder has its own README with its inner structure.
 
 ## Conventions
 
