@@ -8,9 +8,10 @@ import logging
 
 import pandas as pd
 
+from ... import config
 from ..storage.bq_utils import load_existing_score_cache
 from ..storage.checkpoint import checkpoint_key, flush_checkpoint_to_gcs, load_checkpoint
-from .constants import ACTIVE_SFS, PATENT_CONCURRENCY
+from .constants import ACTIVE_SFS
 from .scoring import score_patent_async
 
 logger = logging.getLogger(__name__)
@@ -64,9 +65,9 @@ async def _process_one(
 
 async def score_all_patents(df_shortlist: pd.DataFrame, cache: dict, drug: str) -> list[dict]:
     """Score every shortlisted patent concurrently; results follow row order."""
-    # The semaphore throttles concurrent Gemini calls only; AlloyDB fetches are
-    # I/O-bound and not rate-limited here.
-    semaphore = asyncio.Semaphore(PATENT_CONCURRENCY)
+    # The semaphore throttles concurrent Gemini calls only (config.ANALYSIS_CONCURRENCY, the same setting
+    # the blocking analysis uses); AlloyDB fetches are I/O-bound and not rate-limited here.
+    semaphore = asyncio.Semaphore(config.ANALYSIS_CONCURRENCY)
     lock = asyncio.Lock()
     total = len(df_shortlist)
 

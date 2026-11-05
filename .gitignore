@@ -66,3 +66,6 @@ credentials*.json
 .coverage
 htmlcov/
 .pytest_cache/
+
+# Docs
+README.md

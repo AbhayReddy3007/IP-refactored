@@ -10,7 +10,6 @@ ip_pillar.config like every other dimension.
 
 # ── Concurrency / retrieval ───────────────────────────────────────────────────
 TOP_K_CHUNKS = 12          # Hard cap on chunks fetched per patent
-PATENT_CONCURRENCY = 8     # How many Gemini calls run at once
 EXECUTOR_MAX_WORKERS = 16  # Threads for blocking Gemini / AlloyDB calls
 
 # ── Checkpointing (GCS, one file per drug) ────────────────────────────────────

@@ -618,27 +618,39 @@ def store_patent_analysis(drug_name: str, filename: str, result: Dict) -> None:
         logger.warning(f"[ANALYSIS CACHE] Store failed for {filename}: {e}")
 
 
+def _drug_folder_variants(drug_name: str) -> List[str]:
+    """The drug-folder spellings the analysis cache is searched under, the run's own spelling first:
+    'Semaglutide' -> ['Semaglutide', 'semaglutide']; 'semaglutide' -> ['semaglutide', 'Semaglutide'].
+    GCS paths are case-sensitive, so a cache written under another capitalisation would otherwise be missed."""
+    return list(dict.fromkeys([drug_name, drug_name.lower(), drug_name.capitalize()]))
+
+
 def load_cached_patent_analysis(drug_name: str, filename: str) -> Optional[Dict]:
-    """Load a single patent's cached analysis result. Returns None if not cached."""
-    try:
-        return gcp_utils.read_json(
-            config.GCS_ANALYSIS_CACHE_SUBFOLDER, _cache_filename(filename), drug_name=drug_name,
-        )
-    except Exception:
-        return None
+    """Load a single patent's cached analysis result, looking in each spelling of the drug's folder
+    (see _drug_folder_variants). Returns None if not cached."""
+    for folder in _drug_folder_variants(drug_name):
+        try:
+            result = gcp_utils.read_json(
+                config.GCS_ANALYSIS_CACHE_SUBFOLDER, _cache_filename(filename), drug_name=folder,
+            )
+        except Exception:
+            continue
+        if result is not None:
+            if folder != drug_name:
+                logger.info("[ANALYSIS CACHE] %s found under the folder '%s'", filename, folder)
+            return result
+    return None
 
 
 def load_cached_patents_bulk(drug_name: str, filenames: List[str]) -> Dict[str, Dict]:
     """
-    Load cached analysis results for multiple filenames at once.
+    Load cached analysis results for multiple filenames at once, from any spelling of the drug's folder.
     Returns {filename: patent_dict} for files that have cached results.
     """
     cached: Dict[str, Dict] = {}
     for filename in filenames:
         try:
-            patent = gcp_utils.read_json(
-                config.GCS_ANALYSIS_CACHE_SUBFOLDER, _cache_filename(filename), drug_name=drug_name,
-            )
+            patent = load_cached_patent_analysis(drug_name, filename)
             if patent is not None:
                 cached[filename] = patent
         except Exception as e:
@@ -648,26 +660,30 @@ def load_cached_patents_bulk(drug_name: str, filenames: List[str]) -> Dict[str, 
 
 
 def invalidate_patent_cache(drug_name: str, filename: str) -> None:
-    """Remove a single patent's cached analysis."""
-    try:
-        gcp_utils.delete_blob(
-            config.GCS_ANALYSIS_CACHE_SUBFOLDER, _cache_filename(filename), drug_name=drug_name,
-        )
-    except Exception as e:
-        logger.debug("[ANALYSIS CACHE] Could not invalidate the cache for %s: %s", filename, e)
+    """Remove a single patent's cached analysis, from every spelling of the drug's folder."""
+    for folder in _drug_folder_variants(drug_name):
+        try:
+            gcp_utils.delete_blob(
+                config.GCS_ANALYSIS_CACHE_SUBFOLDER, _cache_filename(filename), drug_name=folder,
+            )
+        except Exception as e:
+            logger.debug("[ANALYSIS CACHE] Could not invalidate the cache for %s in '%s': %s", filename, folder, e)
 
 
 def invalidate_drug_cache(drug_name: str) -> None:
-    """Remove ALL cached analysis results for a drug."""
-    try:
-        names = gcp_utils.list_blob_names(
-            config.GCS_ANALYSIS_CACHE_SUBFOLDER, drug_name=drug_name, suffix=".json",
-        )
-        for name in names:
-            gcp_utils.delete_blob(config.GCS_ANALYSIS_CACHE_SUBFOLDER, name, drug_name=drug_name)
-        logger.info(f"[ANALYSIS CACHE] Invalidated {len(names)} cached result(s) for '{drug_name}'")
-    except Exception as e:
-        logger.warning(f"[ANALYSIS CACHE] Invalidation failed for '{drug_name}': {e}")
+    """Remove ALL cached analysis results for a drug, from every spelling of its folder (otherwise a
+    re-analysis would leave the other spelling's results to be read back on the next run)."""
+    for folder in _drug_folder_variants(drug_name):
+        try:
+            names = gcp_utils.list_blob_names(
+                config.GCS_ANALYSIS_CACHE_SUBFOLDER, drug_name=folder, suffix=".json",
+            )
+            for name in names:
+                gcp_utils.delete_blob(config.GCS_ANALYSIS_CACHE_SUBFOLDER, name, drug_name=folder)
+            if names:
+                logger.info(f"[ANALYSIS CACHE] Invalidated {len(names)} cached result(s) for '{folder}'")
+        except Exception as e:
+            logger.warning(f"[ANALYSIS CACHE] Invalidation failed for '{folder}': {e}")
 
 
 # ─────────────────────────────────────────────
