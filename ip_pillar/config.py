@@ -332,5 +332,5 @@ BQ_LITIGATION_TABLE = os.getenv("BQ_LITIGATION_TABLE", "cognito-prod-394707.cogn
 # Per-run Gemini usage (one row per model per drug).
 GEMINI_STATS_TABLE = os.getenv("GEMINI_STATS_TABLE", f"{PROJECT_ID}.{BQ_DATASET_ID}.gemini_stats")
 
-# Dimension scores (bare table name).
-DIM_SCORES_TABLE = os.getenv("DIM_SCORES_TABLE", "dimension_scores")
+# Dimension scores (bare table name): one row per drug per scored IP dimension (see dim_scores.py).
+DIM_SCORES_TABLE = os.getenv("DIM_SCORES_TABLE", "dim_scores_table")

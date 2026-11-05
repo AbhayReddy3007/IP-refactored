@@ -404,6 +404,7 @@ def store_payload(dimension: str):
         gs://{GCS_BUCKET}/{PAYLOAD_PATH}/{drug}/{GCS_IP_SUBFOLDER}/{dimension}/archived/output_payload_{timestamp}.json
 
     A result with an "error" is not saved. A failed upload is logged by the uploader and never fails the run.
+    It then updates the dimension's row in dim_scores_table (dim_scores.update_dim_score).
     The saved URI is added to the result as "payload_uri" (None if the upload failed)."""
     def decorator(run):
         @functools.wraps(run)
@@ -414,6 +415,9 @@ def store_payload(dimension: str):
             if isinstance(result, dict) and not result.get("error"):
                 result["payload_uri"] = await asyncio.to_thread(
                     upload_dimension_payload_cache_to_gcs, result, result.get("drug_name") or drug_name, dimension)
+                # Refresh this dimension's row in dim_scores_table (a no-op for litigations; never fails the run).
+                from .dim_scores import update_dim_score
+                await asyncio.to_thread(update_dim_score, result.get("drug_name") or drug_name, dimension)
             return result
         return wrapper
     return decorator

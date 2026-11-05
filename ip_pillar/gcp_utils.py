@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
+from google.api_core.exceptions import NotFound
 from google.cloud import bigquery, storage
 from google.oauth2 import service_account
 
@@ -331,41 +332,52 @@ DIM_SCORES_SCHEMA: list[bigquery.SchemaField] = [
 ]
 
 
-def append_dimension_score_to_bigquery(
+def upsert_dimension_score_to_bigquery(
     molecule_name: str,
     dimension_name: str,
     score: float | int | None,
-    pillar_name: str = "Medical Potential",
+    pillar_name: str = "IP",
     rationale: str | None = None,
+    timestamp=None,
 ) -> None:
-    """Append one dimension-score row to the configured BigQuery table.
+    """Write one dimension-score row to the configured BigQuery table, replacing any earlier row of the same
+    product + pillar + dimension (so each drug keeps one row per dimension).
 
-    The payload is normalized to the shared dim-scores schema and written in
-    append mode, creating the table if it does not already exist.
-    """
+    *timestamp* is when the dimension's rows were created (a datetime / pandas Timestamp); now if None.
+    The table is created if it does not already exist."""
     table_id = f"{PROJECT_ID}.{BQ_DATASET_ID}.{DIM_SCORES_TABLE}"
+    stamp = timestamp if timestamp is not None else datetime.now(timezone.utc)
     row = {
         "product": (molecule_name or "").strip() or None,
         "pillar": (pillar_name or "").strip() or None,
         "dimension": (dimension_name or "").strip() or None,
         "score": float(score) if score is not None else None,
         "rationale": (rationale or "").strip() or None,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": stamp.isoformat(),
     }
 
     client = get_bq_client()
+    try:
+        client.get_table(table_id)
+        client.query(
+            f"DELETE FROM `{table_id}` WHERE pillar = @pillar AND dimension = @dimension "
+            "AND REGEXP_REPLACE(LOWER(product), r'\\s+', '') = REGEXP_REPLACE(LOWER(@product), r'\\s+', '')",
+            job_config=bigquery.QueryJobConfig(query_parameters=[
+                bigquery.ScalarQueryParameter("pillar", "STRING", row["pillar"]),
+                bigquery.ScalarQueryParameter("dimension", "STRING", row["dimension"]),
+                bigquery.ScalarQueryParameter("product", "STRING", row["product"]),
+            ]),
+        ).result()
+    except NotFound:
+        pass  # first row: the load below creates the table
+
     job_config = bigquery.LoadJobConfig(
         schema=DIM_SCORES_SCHEMA,
         write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
         create_disposition=bigquery.CreateDisposition.CREATE_IF_NEEDED,
     )
-
-    load_job = client.load_table_from_json([row], table_id, job_config=job_config)
-    load_job.result()
+    client.load_table_from_json([row], table_id, job_config=job_config).result()
     logger.info(
-        "[DIM_SCORE] Appended dimension score for molecule '%s', pillar '%s', dimension '%s' to %s",
-        row["product"],
-        row["pillar"],
-        row["dimension"],
-        table_id,
+        "[DIM_SCORE] Wrote dimension score for '%s', pillar '%s', dimension '%s' to %s",
+        row["product"], row["pillar"], row["dimension"], table_id,
     )
