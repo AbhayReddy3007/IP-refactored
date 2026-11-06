@@ -112,12 +112,12 @@ async def call_gemini_json(prompt: str, filename: str, step: str) -> Optional[Di
 
 
 def upload_blob(blob_name: str, data: bytes, content_type: str = "application/octet-stream",
-                bucket: Optional[str] = None) -> str:
+                bucket: Optional[str] = None, project: Optional[str] = None) -> str:
     """Upload *data* to gs://{bucket or GCS_BUCKET}/{blob_name} (an absolute
-    object path, unlike write_bytes which writes under the pipeline cache).
-    Returns the GCS URI."""
+    object path, unlike write_bytes which writes under the pipeline cache),
+    through a client for *project* (default PROJECT_ID). Returns the GCS URI."""
     bucket_name = bucket or GCS_BUCKET
-    get_gcs_client().bucket(bucket_name).blob(blob_name).upload_from_string(data, content_type=content_type)
+    get_gcs_client(project).bucket(bucket_name).blob(blob_name).upload_from_string(data, content_type=content_type)
     return f"gs://{bucket_name}/{blob_name}"
 
 

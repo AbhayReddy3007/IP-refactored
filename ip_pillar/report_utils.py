@@ -153,7 +153,7 @@ def document(output_path: str, title: str) -> SimpleDocTemplate:
 # ─────────────────────────────────────────────
 
 def report_gcs_paths(drug_name: str, run_ts: str, report_name: Optional[str] = None) -> Tuple[str, str]:
-    """(current, archived) object paths in config.REPORT_GCS_BUCKET. The report is
+    """(current, archived) object paths in config.REPORT_GCS_BUCKET (project config.REPORT_GCS_PROJECT). The report is
     named after its dimension: *report_name*, default
     config.DIMENSION_PRIMARY_MARKET_ENTRY_HORIZON."""
     ip_folder = f"{config.REPORT_GCS_PATH}/{safe_name(drug_name)}/{config.GCS_IP_SUBFOLDER}"
@@ -166,7 +166,8 @@ def upload_report(drug_name: str, pdf_bytes: bytes, run_ts: str, report_name: Op
     Returns (current_uri, archive_uri)."""
     current_path, archive_path = report_gcs_paths(drug_name, run_ts, report_name)
     return tuple(
-        gcp_helpers.upload_blob(path, pdf_bytes, content_type="application/pdf", bucket=config.REPORT_GCS_BUCKET)
+        gcp_helpers.upload_blob(path, pdf_bytes, content_type="application/pdf",
+                                 bucket=config.REPORT_GCS_BUCKET, project=config.REPORT_GCS_PROJECT)
         for path in (current_path, archive_path)
     )
 

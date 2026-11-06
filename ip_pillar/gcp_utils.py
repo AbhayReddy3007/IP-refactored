@@ -54,16 +54,17 @@ def get_bq_client() -> bigquery.Client:
     return bigquery.Client(project=PROJECT_ID)
 
 
-def get_gcs_client() -> storage.Client:
-    """Return an authenticated GCS client.
+def get_gcs_client(project: Optional[str] = None) -> storage.Client:
+    """Return an authenticated GCS client for *project* (default PROJECT_ID).
 
     Uses the configured service-account file when present; otherwise falls back
     to Application Default Credentials.
     """
+    project = project or PROJECT_ID
     credentials_path = GOOGLE_APPLICATION_CREDENTIALS
     if credentials_path and Path(credentials_path).exists():
-        return storage.Client.from_service_account_json(credentials_path)
-    return storage.Client(project=PROJECT_ID)
+        return storage.Client.from_service_account_json(credentials_path, project=project)
+    return storage.Client(project=project)
 
 
 # ─────────────────────────────────────────────

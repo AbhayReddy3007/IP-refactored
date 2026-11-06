@@ -56,7 +56,9 @@ GCS_IP_SUBFOLDER = os.getenv("GCS_IP_SUBFOLDER", "IP")
 # LOE (Primary Market) PDF reports (primary_market_entry_horizon/generate_report_and_rationale/generate_report.py):
 #   gs://{REPORT_GCS_BUCKET}/{REPORT_GCS_PATH}/{drug}/{GCS_IP_SUBFOLDER}/Primary Market Entry Horizon.pdf
 #   gs://{REPORT_GCS_BUCKET}/{REPORT_GCS_PATH}/{drug}/{GCS_IP_SUBFOLDER}/archive/Primary Market Entry Horizon+{timestamp}.pdf
-REPORT_GCS_BUCKET = os.getenv("REPORT_GCS_BUCKET", "cognito-prod") or GCS_BUCKET
+# Reports go to GCS_BUCKET (unless REPORT_GCS_BUCKET overrides it), uploaded through a client for REPORT_GCS_PROJECT.
+REPORT_GCS_BUCKET = os.getenv("REPORT_GCS_BUCKET") or GCS_BUCKET
+REPORT_GCS_PROJECT = os.getenv("REPORT_GCS_PROJECT", "cognito-dev-380506")
 REPORT_GCS_PATH   = os.getenv("REPORT_GCS_PATH", "Cognito_new/reports").strip("/")
 
 # Dimension output payloads (JSON, saved by utils.store_payload):
