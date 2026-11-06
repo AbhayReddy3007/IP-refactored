@@ -29,7 +29,7 @@ import time
 from typing import List
 
 from . import config
-from .drug_list import list_glp1_drugs_with_patent_master_rows, list_glp1_patent_files
+from .drug_list import drug_list, list_glp1_drugs_with_patent_master_rows, list_glp1_patent_files
 from .global_launch_sequencing_and_geographic_arbitrage import global_launch_sequencing_and_geographic_arbitrage
 from .litigations import litigation_analysis
 from .patent_strength import patent_strength
@@ -43,21 +43,6 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────
 # Drug discovery + Cloud Run Jobs sharding
 # ─────────────────────────────────────────────
-
-def list_glp1_drug_folders() -> List[str]:
-    """Every GLP-1 drug (BigQuery drug list) that has approved patent PDFs in GCS; for the litigations
-    dimension, which reads patent_master only, every GLP-1 drug with patents in patent_master."""
-    if config.IP_DIMENSION == "litigations":
-        drugs = sorted(list_glp1_drugs_with_patent_master_rows())
-        logger.info("[DISCOVERY] %d GLP-1 drug(s) with patent_master patents: %s", len(drugs), drugs)
-        return drugs
-    if not config.GCS_BUCKET:
-        logger.error("[DISCOVERY] GCS_BUCKET not set — cannot list patent files")
-        return []
-    drugs = sorted(list_glp1_patent_files())
-    logger.info("[DISCOVERY] %d GLP-1 drug(s) with patents: %s", len(drugs), drugs)
-    return drugs
-
 
 def get_my_shard(drugs: List[str]) -> List[str]:
     """This Cloud Run task's share of *drugs* (all of them when run locally). Drugs are dealt out in turn, so
@@ -76,13 +61,31 @@ def parse_drug_name_list(raw: str) -> List[str]:
 
 
 def get_target_drugs() -> List[str]:
-    """DRUG_NAME (one or more, comma-separated) if set, otherwise every GLP-1
-    drug with patent PDFs in GCS."""
+    """This task's drugs: its share (get_my_shard) of DRUG_NAME (one or more, comma-separated) if set,
+    otherwise of every GLP-1 drug that has patents.
+
+    Discovery shards BEFORE the per-drug patent check, not after: the check lists the GCS patents prefix and
+    queries patent_master once per drug, so checking all drugs in every task repeated that work in each of
+    the tasks. The drug list is one sorted BigQuery result, the same in every task, so the shares still
+    cover it exactly once. A drug with no patents is dropped from its task's share."""
     explicit = parse_drug_name_list(config.DRUG_NAME)
     if explicit:
         logger.info("[DISCOVERY] DRUG_NAME set -> %d drug(s): %s", len(explicit), explicit)
-        return explicit
-    return list_glp1_drug_folders()
+        return get_my_shard(explicit)
+
+    if config.IP_DIMENSION == "litigations":
+        # Reads patent_master only: one query, no GCS listing.
+        drugs = sorted(list_glp1_drugs_with_patent_master_rows())
+        logger.info("[DISCOVERY] %d GLP-1 drug(s) with patent_master patents: %s", len(drugs), drugs)
+        return get_my_shard(drugs)
+
+    if not config.GCS_BUCKET:
+        logger.error("[DISCOVERY] GCS_BUCKET not set — cannot list patent files")
+        return []
+    candidates = get_my_shard(drug_list())
+    drugs = sorted(list_glp1_patent_files(candidates))
+    logger.info("[DISCOVERY] %d of this task's %d GLP-1 drug(s) have patents: %s", len(drugs), len(candidates), drugs)
+    return drugs
 
 
 # ─────────────────────────────────────────────
@@ -139,12 +142,11 @@ async def run_drug(drug_name: str) -> dict:
 
 async def run_shard() -> dict:
     """Run the IP dimension(s) for every drug in this task's shard of the target list."""
-    drugs = get_target_drugs()
-    if not drugs:
+    shard = get_target_drugs()
+    if not shard:
         return {"status": "error", "message": "No drugs to process — DRUG_NAME is unset and none were discovered.",
                 "results": []}
 
-    shard = get_my_shard(drugs)
     results = []
     for i, drug_name in enumerate(shard, 1):
         logger.info("[PROGRESS] %d/%d: %s", i, len(shard), drug_name)

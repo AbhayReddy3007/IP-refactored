@@ -27,7 +27,7 @@ CLI:
 
 import argparse
 import logging
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from google.cloud import bigquery
 
@@ -125,9 +125,10 @@ def resolve_drug_name(name: str) -> str:
     return cleaned
 
 
-def list_glp1_patent_files() -> Dict[str, List[Dict]]:
+def list_glp1_patent_files(drugs: Optional[List[str]] = None) -> Dict[str, List[Dict]]:
     """
-    For every GLP-1 drug returned by drug_list(), lists its patent
+    For every GLP-1 drug returned by drug_list() (or only for *drugs*, a subset of that list
+    such as one Cloud Run task's share), lists its patent
     PDFs in GCS via patent_filter() (same fuzzy folder-name matching used
     everywhere else). Drugs with no matching GCS folder (no patents indexed
     yet for that drug) are skipped, not errored.
@@ -136,7 +137,8 @@ def list_glp1_patent_files() -> Dict[str, List[Dict]]:
         {drug_name_lowercase: [{"filename": str, "blob_name": str}, ...]}
         Only drugs with at least one PDF are included.
     """
-    drugs = drug_list()
+    if drugs is None:
+        drugs = drug_list()
     if not drugs:
         logger.warning("[DRUG_LIST] GLP-1 query returned no drug names — nothing to list")
         return {}
