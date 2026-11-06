@@ -35,7 +35,7 @@ def _select_blocking_granted(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _apply_approval_filter(df: pd.DataFrame, drug: str) -> pd.DataFrame:
-    """Keep patents patent_master approves for *drug* (patent_status + confidence).
+    """Keep patents patent_master approves for *drug* (patent_status + eval_refined_confidence).
     If patent_master returns nothing (e.g. the query failed) the shortlist is kept as is."""
     approved = {normalize_patent_number(n) for n in get_approved_patent_numbers(drug)}
     if not approved:

@@ -2,7 +2,7 @@
 litigations
 ───────────
 IP dimension 5: the patent litigation and court cases found for a drug's patents (ANDA Paragraph IV, IPR at PTAB,
-EPO oppositions, India, compounding-pharmacy suits). Reads patent_master (patents with confidence above
+EPO oppositions, India, compounding-pharmacy suits). Reads patent_master (patents with eval_refined_confidence above
 the threshold) and writes the litigation table.
 
     litigation_analysis.py   litigation_analysis(drug) — the whole pipeline for one drug
@@ -11,7 +11,7 @@ the threshold) and writes the litigation table.
     constants.py             search sizes, temperatures and the case types
 
     retrieval/   what goes in
-        patents.py          the drug's patent numbers and filing dates (patent_master, confidence > threshold)
+        patents.py          the drug's patent numbers and filing dates (patent_master, eval_refined_confidence > threshold)
         marketed.py         whether the drug is Marketed (brand names are looked up only then)
     search/      how the cases are found
         steps.py            innovator and brand names, then the grouped litigation search (Gemini + Google Search)

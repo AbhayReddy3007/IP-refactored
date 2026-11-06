@@ -9,7 +9,7 @@ from ip_pillar.litigations import litigation_analysis
 result = await litigation_analysis("semaglutide")   # the drug name is the only input
 ```
 
-Unlike the other dimensions it reads **`patent_master`** (patents with confidence above
+Unlike the other dimensions it reads **`patent_master`** (patents with `eval_refined_confidence` above
 `PATENT_CONFIDENCE_THRESHOLD`, default 0.3), not `glp_master_loe`, so it does not depend on
 `primary_market_entry_horizon`.
 

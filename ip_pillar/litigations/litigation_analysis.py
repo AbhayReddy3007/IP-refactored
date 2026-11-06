@@ -6,7 +6,7 @@ found for its patents.
 
     litigation_analysis(drug_name)   — async; runs every step below end to end
 
-    1. Load the drug's patent numbers and filing dates from patent_master (confidence above the threshold); the patents
+    1. Load the drug's patent numbers and filing dates from patent_master (eval_refined_confidence above the threshold); the patents
        already in the litigation table are skipped, so a patent is never searched twice
                                                                         (retrieval, bq_utils)
     2. Innovator, and the brand names too when the drug is Marketed, with Gemini + Google Search
@@ -70,7 +70,7 @@ async def litigation_analysis(drug_name: str) -> dict:
          "unique_challengers", "failed_patents", "processing_time_seconds", "output_tables": [...],
          "report": {"gcs_uri", "archive_uri"} or {"error"}}
         (plus "innovator", "brand_names" and "summary" when patents were searched)
-        or {"drug_name", "error", ...} if the drug has no patent_master rows above the confidence threshold.
+        or {"drug_name", "error", ...} if the drug has no patent_master rows above the eval_refined_confidence threshold.
     """
     reset_gemini_call_stats()
     t0 = time.time()
@@ -84,7 +84,7 @@ async def litigation_analysis(drug_name: str) -> dict:
         if not patents:
             run_status = "failed"
             error = (f"No patents for '{drug}' in {config.PATENT_MASTER_TABLE} "
-                     f"with confidence > {config.PATENT_CONFIDENCE_THRESHOLD}.")
+                     f"with {config.PATENT_CONFIDENCE_COLUMN} > {config.PATENT_CONFIDENCE_THRESHOLD}.")
             return {"drug_name": drug, "error": error}
         existing = await asyncio.to_thread(load_existing_rows, drug)
         searched_before = {normalize_patent_number(row["patent_number"]) for row in existing if row.get("patent_number")}

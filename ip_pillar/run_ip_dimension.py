@@ -36,7 +36,7 @@ from .litigations import litigation_analysis
 from .patent_strength import patent_strength
 from .patent_thicket_and_circumvention import patent_thicket_and_circumvention
 from .primary_market_entry_horizon import primary_market_entry_horizon
-from .utils import setup_logging
+from .utils import normalize_drug_str, setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -61,9 +61,23 @@ def parse_drug_name_list(raw: str) -> List[str]:
     return list(dict.fromkeys(name.strip() for name in (raw or "").split(",") if name.strip()))
 
 
+def _without_skipped(drugs: List[str]) -> List[str]:
+    """*drugs* minus config.SKIP_DRUGS (matched ignoring case and spacing). Applied before the drugs are dealt
+    out to the tasks, and every task has the same SKIP_DRUGS, so the shares still cover the rest exactly once."""
+    skip = {normalize_drug_str(name) for name in parse_drug_name_list(config.SKIP_DRUGS)}
+    if not skip:
+        return drugs
+    kept = [d for d in drugs if normalize_drug_str(d) not in skip]
+    unknown = skip - {normalize_drug_str(d) for d in drugs}
+    logger.info("[DISCOVERY] SKIP_DRUGS left out %d of %d drug(s)", len(drugs) - len(kept), len(drugs))
+    if unknown:
+        logger.warning("[DISCOVERY] SKIP_DRUGS name(s) not in the drug list (check the spelling): %s", sorted(unknown))
+    return kept
+
+
 def get_target_drugs() -> List[str]:
     """This task's drugs: its share (get_my_shard) of DRUG_NAME (one or more, comma-separated) if set,
-    otherwise of every GLP-1 drug that has patents.
+    otherwise of every GLP-1 drug that has patents, except those in SKIP_DRUGS.
 
     Discovery shards BEFORE the per-drug patent check, not after: the check lists the GCS patents prefix and
     queries patent_master once per drug, so checking all drugs in every task repeated that work in each of
@@ -76,14 +90,14 @@ def get_target_drugs() -> List[str]:
 
     if config.IP_DIMENSION == "litigations":
         # Reads patent_master only: one query, no GCS listing.
-        drugs = sorted(list_glp1_drugs_with_patent_master_rows())
+        drugs = _without_skipped(sorted(list_glp1_drugs_with_patent_master_rows()))
         logger.info("[DISCOVERY] %d GLP-1 drug(s) with patent_master patents: %s", len(drugs), drugs)
         return get_my_shard(drugs)
 
     if not config.GCS_BUCKET:
         logger.error("[DISCOVERY] GCS_BUCKET not set — cannot list patent files")
         return []
-    candidates = get_my_shard(drug_list())
+    candidates = get_my_shard(_without_skipped(drug_list()))
     drugs = sorted(list_glp1_patent_files(candidates))
     logger.info("[DISCOVERY] %d of this task's %d GLP-1 drug(s) have patents: %s", len(drugs), len(candidates), drugs)
     return drugs

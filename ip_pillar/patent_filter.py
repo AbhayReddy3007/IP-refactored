@@ -3,7 +3,7 @@ patent_filter.py
 ─────────────────
 Lists patent PDF filenames from GCS for a given drug name, restricted to
 patents BigQuery's patent_master table (config.PATENT_MASTER_TABLE) marks
-as approved: patent_status = 'PDF Downloaded' and confidence > 0.3. A PDF
+as approved: patent_status = 'PDF Downloaded' and eval_refined_confidence > 0.3. A PDF
 sitting in GCS that isn't approved for this molecule in patent_master is
 excluded — so indexing, blocking analysis, and the output tables downstream
 all only ever see this approved set. No downloading here — metadata only.
@@ -50,21 +50,21 @@ SELECT patent_number
 FROM `{table}`
 WHERE lower(molecule_name) = @molecule_name
 AND patent_status = '{status}'
-AND confidence > {threshold}
+AND {confidence} > {threshold}
 """
 
 PATENT_MASTER_QUERY_ALL = """
 SELECT patent_number
 FROM `{table}`
 WHERE patent_status = '{status}'
-AND confidence > {threshold}
+AND {confidence} > {threshold}
 """
 
 
 def get_approved_patent_numbers(molecule_name: Optional[str] = None) -> List[str]:
     """
     Queries config.PATENT_MASTER_TABLE for approved patent numbers:
-    patent_status = 'PDF Downloaded' and confidence > 0.3.
+    patent_status = 'PDF Downloaded' and eval_refined_confidence > 0.3.
 
     Args:
         molecule_name: If given, restricts to lower(molecule_name) ==
@@ -83,7 +83,8 @@ def get_approved_patent_numbers(molecule_name: Optional[str] = None) -> List[str
 
     try:
         client = gcp_utils.get_bq_client()
-        _q_kwargs = dict(status=config.PATENT_STATUS_FILTER, threshold=config.PATENT_CONFIDENCE_THRESHOLD)
+        _q_kwargs = dict(status=config.PATENT_STATUS_FILTER, threshold=config.PATENT_CONFIDENCE_THRESHOLD,
+                         confidence=config.PATENT_CONFIDENCE_SQL)
         if molecule_name:
             query = PATENT_MASTER_QUERY_BY_MOLECULE.format(table=config.PATENT_MASTER_TABLE, **_q_kwargs)
             job_config = bigquery.QueryJobConfig(
@@ -148,7 +149,7 @@ def patent_filter(drug_name: str) -> List[Dict]:
     """
     Lists PDF filenames for *drug_name* from GCS, then restricts the result
     to only files whose patent number is approved in patent_master for this
-    molecule: patent_status = 'PDF Downloaded' and confidence > 0.3.
+    molecule: patent_status = 'PDF Downloaded' and eval_refined_confidence > 0.3.
 
     GCS folder matching tries, in order:
       1. Exact match: lower(drug_name) == lower(folder_name).

@@ -49,7 +49,7 @@ Two kinds of helpers exist:
 | Module | What it provides |
 |---|---|
 | `drug_list.py` | `drug_list` (the GLP-1 drug query against BigQuery), `resolve_drug_name` (a name as the drug list spells it, used by every dimension), `list_glp1_patent_files` (drugs with patent PDFs in GCS), `list_glp1_drugs_with_patent_master_rows` (drugs with patents in `patent_master`, for litigations), `align_drug_name` / `align_drug_names` (fix the Drug Name spelling on the LOE tables). |
-| `patent_filter.py` | `patent_filter(drug)` lists the drug's patent PDFs in GCS, keeping only patents `patent_master` approves (status "PDF Downloaded", confidence above 0.3). `get_approved_patent_numbers` returns the approved numbers for one molecule or all. |
+| `patent_filter.py` | `patent_filter(drug)` lists the drug's patent PDFs in GCS, keeping only patents `patent_master` approves (status "PDF Downloaded", `eval_refined_confidence` above 0.3). `get_approved_patent_numbers` returns the approved numbers for one molecule or all. |
 | `master_loe.py` | `load_master_data(drug)` returns the drug's `glp_master_loe` rows the way the downstream dimensions use them: friendly column names, normalised text, numeric forecast counts, approved patents only, de-duplicated. |
 
 ### Patent text and dates

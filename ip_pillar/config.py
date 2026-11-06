@@ -189,15 +189,23 @@ CLOUD_RUN_TASK_COUNT = int(os.getenv("CLOUD_RUN_TASK_COUNT", "1"))
 # e.g. "Semaglutide" or "Semaglutide, Tirzepatide, Liraglutide".
 # Leave unset / empty to process every drug found in GCS (the default,
 # sharded-discovery behaviour).
-DRUG_NAME = os.getenv("DRUG_NAME", "")
+DRUG_NAME = os.getenv("DRUG_NAME", "Semaglutide,Orforglipron Calcium,Lotiglipron")
+# Drugs to leave out when DRUG_NAME is not set (comma-separated, same spelling rules as DRUG_NAME): "run every
+# drug except these", e.g. the ones an earlier run already finished.
+SKIP_DRUGS = os.getenv("SKIP_DRUGS", "Asc-30,Bi-3034701,Da-302168S,Aleniglipron L-Arginine,Benaglutide,Bgm-0504,Azd-9550,Azd-6234+Azd-9550,Berobenatide,Acmopatide")
 
 # ─────────────────────────────────────────────
 # Patent filter — quality gates (patent_filter.py)
 # ─────────────────────────────────────────────
-# Only patents whose patent_status matches this string AND whose confidence
+# Only patents whose patent_status matches this string AND whose eval_refined_confidence
 # score exceeds the threshold are considered approved for indexing/analysis.
 PATENT_STATUS_FILTER       = os.getenv("PATENT_STATUS_FILTER", "PDF Downloaded")
 PATENT_CONFIDENCE_THRESHOLD = float(os.getenv("PATENT_CONFIDENCE_THRESHOLD", "0.3"))
+# The patent_master column the threshold is applied to. Every patent_master query uses PATENT_CONFIDENCE_SQL
+# (the column cast to FLOAT64, so a text-typed column still compares as a number); no other confidence column
+# is read. Deliberately not an environment variable.
+PATENT_CONFIDENCE_COLUMN = "eval_refined_confidence"
+PATENT_CONFIDENCE_SQL    = f"SAFE_CAST({PATENT_CONFIDENCE_COLUMN} AS FLOAT64)"
 
 # ─────────────────────────────────────────────
 # AlloyDB — connection tunables (alloydb_utils.py)
@@ -277,7 +285,7 @@ NO_MARKETED_SKIP = os.getenv("NO_MARKETED_SKIP", "false").lower() in ("1", "true
 # Patent-master: every patent known for each molecule, with its download/review
 # status and a confidence score. patent_filter() only returns GCS PDFs whose
 # patent number has a row here with patent_status = 'PDF Downloaded' and
-# confidence > 0.3 — so indexing, analysis and the output tables are all
+# eval_refined_confidence > 0.3 — so indexing, analysis and the output tables are all
 # restricted to this approved set.
 PATENT_MASTER_TABLE = os.getenv("PATENT_MASTER_TABLE", "cognito-dev-380506.stage.patent_master")
 

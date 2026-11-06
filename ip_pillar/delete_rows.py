@@ -5,7 +5,7 @@ Deleting operations on the LOE output tables (glp_patent_loe / glp_master_loe).
 
     delete_drug_rows(table_id, drug_name)   delete every row of one drug from a table
     delete_low_confidence_rows(table_id, drug_name=None)
-                                            delete patent rows whose patent_master confidence is
+                                            delete patent rows whose patent_master eval_refined_confidence is
                                             <= config.PATENT_CONFIDENCE_THRESHOLD (0.3)
 
 primary_market_entry_horizon.bq_utils.write_table_to_bq() calls this before appending a drug's new rows, so a
@@ -50,7 +50,7 @@ def delete_drug_rows(table_id: str, drug_name: str) -> int:
 
 
 def delete_low_confidence_rows(table_id: str, drug_name: Optional[str] = None) -> int:
-    """Delete rows from *table_id* whose patent has confidence <=
+    """Delete rows from *table_id* whose patent has eval_refined_confidence <=
     config.PATENT_CONFIDENCE_THRESHOLD in config.PATENT_MASTER_TABLE — one
     drug's rows, or every drug's when *drug_name* is None.
     Returns the number of rows deleted (0 if the table doesn't exist yet)."""
@@ -63,7 +63,7 @@ def delete_low_confidence_rows(table_id: str, drug_name: Optional[str] = None) -
     molecule_filter = f" AND {same_drug('molecule_name')}" if drug_name else ""
     low_confidence = (
         f"SELECT {clean_number('patent_number')} FROM `{config.PATENT_MASTER_TABLE}` "
-        f"WHERE confidence <= {config.PATENT_CONFIDENCE_THRESHOLD}{molecule_filter}"
+        f"WHERE {config.PATENT_CONFIDENCE_SQL} <= {config.PATENT_CONFIDENCE_THRESHOLD}{molecule_filter}"
     )
     where = f"{clean_number(PATENT_NUMBER_BQ_COLUMN)} IN ({low_confidence})"
     params = None
