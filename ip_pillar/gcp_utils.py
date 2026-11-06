@@ -160,6 +160,15 @@ def list_blob_names(subfolder: str, drug_name: Optional[str] = None, suffix: Opt
     return names
 
 
+def list_subfolders(prefix: str) -> List[str]:
+    """The immediate "sub-folders" under *prefix* in the configured bucket, each as its full prefix ending in "/".
+    One delimiter listing: folder names only, so it stays fast however many objects the folders hold."""
+    iterator = get_gcs_client().list_blobs(GCS_BUCKET, prefix=prefix, delimiter="/")
+    for _ in iterator:      # the prefixes are filled in as the pages are read
+        pass
+    return sorted(iterator.prefixes)
+
+
 def list_blobs_with_prefix(prefix: str):
     """List raw GCS blob objects under *prefix* in the configured bucket."""
     return list(get_gcs_client().list_blobs(GCS_BUCKET, prefix=prefix))

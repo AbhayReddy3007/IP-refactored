@@ -23,6 +23,8 @@ Usage:
 """
 
 import logging
+import threading
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -116,6 +118,32 @@ def get_approved_patent_numbers(molecule_name: Optional[str] = None) -> List[str
 # GCS — PDFs for a drug, filtered down to approved patent numbers
 # ─────────────────────────────────────────────
 
+_folders_lock = threading.Lock()
+_folders_cache: Dict[str, tuple] = {}   # prefix -> (monotonic time, exact map, fuzzy map)
+
+
+def _drug_folders(prefix: str):
+    """({lowercased folder name: folder prefix}, {normalised folder name: folder prefix}) for the drug folders
+    directly under *prefix*. One cheap delimiter listing (folder names only, no objects), reused for
+    config.PATENT_FOLDERS_CACHE_SECONDS, instead of listing every object under the prefix on every call."""
+    with _folders_lock:
+        cached = _folders_cache.get(prefix)
+        if cached and time.monotonic() - cached[0] < config.PATENT_FOLDERS_CACHE_SECONDS:
+            return cached[1], cached[2]
+
+        exact: Dict[str, str] = {}
+        fuzzy: Dict[str, str] = {}
+        for folder_prefix in sorted(gcp_utils.list_subfolders(prefix)):
+            folder_name = folder_prefix[len(prefix):].strip("/")
+            if not folder_name:
+                continue
+            exact.setdefault(folder_name.strip().lower(), folder_prefix)
+            fuzzy.setdefault(normalize(folder_name), folder_prefix)
+        logger.info("[PATENT_FILTER] %d drug folder(s) under %s", len(exact), prefix)
+        _folders_cache[prefix] = (time.monotonic(), exact, fuzzy)
+        return exact, fuzzy
+
+
 def patent_filter(drug_name: str) -> List[Dict]:
     """
     Lists PDF filenames for *drug_name* from GCS, then restricts the result
@@ -155,24 +183,7 @@ def patent_filter(drug_name: str) -> List[Dict]:
 
     logger.info("[PATENT_FILTER] Listing PDFs for '%s' under gs://%s/%s", drug_name, config.GCS_BUCKET, prefix)
 
-    all_blobs = gcp_utils.list_blobs_with_prefix(prefix)
-    logger.info("[PATENT_FILTER] Found %d total object(s) under prefix", len(all_blobs))
-
-    prefix_depth = len(prefix.split("/")) - 1
-    drug_folders_exact: Dict[str, str] = {}
-    drug_folders_fuzzy: Dict[str, str] = {}
-    for blob in all_blobs:
-        parts = blob.name.split("/")
-        if len(parts) > prefix_depth + 1:
-            folder_name = parts[prefix_depth]
-            folder_prefix = "/".join(parts[: prefix_depth + 1]) + "/"
-            exact_key = folder_name.strip().lower()
-            fuzzy_key = normalize(folder_name)
-            if exact_key not in drug_folders_exact:
-                drug_folders_exact[exact_key] = folder_prefix
-            if fuzzy_key not in drug_folders_fuzzy:
-                drug_folders_fuzzy[fuzzy_key] = folder_prefix
-
+    drug_folders_exact, drug_folders_fuzzy = _drug_folders(prefix)
     logger.debug("[PATENT_FILTER] Drug folders found: %s", list(drug_folders_exact.keys()))
 
     if drug_lower in drug_folders_exact:
@@ -191,10 +202,12 @@ def patent_filter(drug_name: str) -> List[Dict]:
         )
         return []
 
+    # Only this drug's folder is listed - not the whole patents prefix (17k+ objects, ~35 s a call).
+    folder_blobs = gcp_utils.list_blobs_with_prefix(matched_prefix)
+    logger.info("[PATENT_FILTER] Found %d object(s) in %s", len(folder_blobs), matched_prefix)
     pdf_blobs = [
-        b for b in all_blobs
-        if b.name.startswith(matched_prefix)
-        and b.name.lower().endswith(".pdf")
+        b for b in folder_blobs
+        if b.name.lower().endswith(".pdf")
         and not b.name.endswith("/")
     ]
 

@@ -26,6 +26,7 @@ import argparse
 import asyncio
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import List
 
 from . import config
@@ -162,6 +163,17 @@ async def run_shard() -> dict:
             "failed": len(failed), "results": results}
 
 
+def _run(coro):
+    """asyncio.run(coro) with a larger default thread pool. The blocking AlloyDB / GCS calls the async code hands
+    to asyncio.to_thread run on that pool, and asyncio's default (min(32, cpu + 4) = 6 threads on a 2-vCPU
+    Cloud Run task) would cap the parallel patents below INDEXER_CONCURRENCY."""
+    async def with_pool():
+        asyncio.get_running_loop().set_default_executor(
+            ThreadPoolExecutor(max_workers=config.THREAD_POOL_WORKERS, thread_name_prefix="ip-worker"))
+        return await coro
+    return asyncio.run(with_pool())
+
+
 # ─────────────────────────────────────────────
 # CLI
 # ─────────────────────────────────────────────
@@ -181,12 +193,12 @@ def main() -> None:
     logger.info("IP DIMENSION PIPELINE — task %d/%d", config.CLOUD_RUN_TASK_INDEX + 1, config.CLOUD_RUN_TASK_COUNT)
 
     if args.drug:
-        result = asyncio.run(run_drug(args.drug))
+        result = _run(run_drug(args.drug))
         failed = bool(result.get("error"))
         if failed:
             logger.error("[IP DIMENSION] %s", result["error"])
     else:
-        result = asyncio.run(run_shard())
+        result = _run(run_shard())
         failed = result["status"] == "error" or result.get("failed", 0) > 0
 
     elapsed = time.time() - t0

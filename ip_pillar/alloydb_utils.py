@@ -29,6 +29,7 @@ Usage:
 import atexit
 import json
 import logging
+import threading
 import time
 import urllib.parse
 from typing import List, Optional
@@ -40,7 +41,9 @@ from . import config
 
 logger = logging.getLogger(__name__)
 
-_open_connections: list = []
+_open_connections: list = []   # every real connection still open (for the exit cleanup)
+_idle: list = []               # [(connection, time it was returned)], most recently used last
+_pool_lock = threading.Lock()
 
 
 # ─────────────────────────────────────────────
@@ -60,11 +63,8 @@ def _database_url() -> str:
     )
 
 
-def _get_conn(
-    retries: int = None,
-    backoff: float = None,
-):
-    """Get a new psycopg2 connection with retry logic for transient failures."""
+def _connect(retries: int = None, backoff: float = None):
+    """Open a new psycopg2 connection with retry logic for transient failures."""
     retries = retries if retries is not None else config.ALLOYDB_RETRY_COUNT
     backoff = backoff if backoff is not None else config.ALLOYDB_RETRY_BACKOFF
     last_err = None
@@ -72,7 +72,8 @@ def _get_conn(
     for attempt in range(retries):
         try:
             conn = psycopg2.connect(url, connect_timeout=config.ALLOYDB_CONNECT_TIMEOUT)
-            _open_connections.append(conn)
+            with _pool_lock:
+                _open_connections.append(conn)
             return conn
         except psycopg2.OperationalError as e:
             last_err = e
@@ -88,15 +89,103 @@ def _get_conn(
     raise last_err
 
 
+def _discard(conn) -> None:
+    """Really close a connection and forget it."""
+    try:
+        if conn is not None and not conn.closed:
+            conn.close()
+    except Exception:
+        pass
+    with _pool_lock:
+        try:
+            _open_connections.remove(conn)
+        except ValueError:
+            pass
+
+
+class _PooledConnection:
+    """A psycopg2 connection on loan from the pool. Behaves like the connection itself, except close(), which
+    ends the open transaction and hands the connection back for reuse instead of closing it - so every caller's
+    existing ``conn = _get_conn() ... finally: conn.close()`` keeps working and now reuses connections."""
+
+    __slots__ = ("_conn", "_released")
+
+    def __init__(self, conn):
+        object.__setattr__(self, "_conn", conn)
+        object.__setattr__(self, "_released", False)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def __setattr__(self, name, value):
+        setattr(self._conn, name, value)
+
+    def close(self) -> None:
+        if self._released:
+            return
+        object.__setattr__(self, "_released", True)
+        conn = self._conn
+        try:
+            if conn.closed:
+                _discard(conn)
+                return
+            conn.rollback()          # end any open transaction so the next user starts clean
+            conn.autocommit = False  # _ensure_schema switches it on
+        except Exception:
+            _discard(conn)
+            return
+        with _pool_lock:
+            _idle.append((conn, time.monotonic()))
+            keep = max(config.ALLOYDB_POOL_MAX_IDLE, 0)
+            surplus = _idle[:len(_idle) - keep] if len(_idle) > keep else []
+            del _idle[:len(surplus)]
+        for old, _ in surplus:
+            _discard(old)
+
+
+def _usable(conn, returned_at: float) -> bool:
+    """False for a connection the server dropped while it sat idle."""
+    if conn.closed:
+        return False
+    if time.monotonic() - returned_at < config.ALLOYDB_POOL_TEST_AFTER_SECONDS:
+        return True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+        conn.rollback()
+        return True
+    except Exception:
+        return False
+
+
+def _get_conn(
+    retries: int = None,
+    backoff: float = None,
+):
+    """A connection from the pool (a new one when none is idle). Call .close() to give it back."""
+    while True:
+        with _pool_lock:
+            entry = _idle.pop() if _idle else None
+        if entry is None:
+            return _PooledConnection(_connect(retries, backoff))
+        conn, returned_at = entry
+        if _usable(conn, returned_at):
+            return _PooledConnection(conn)
+        _discard(conn)
+
+
 def _cleanup_connections():
     """Close all open connections before Python teardown."""
-    for conn in _open_connections:
+    with _pool_lock:
+        conns = list(_open_connections)
+        _open_connections.clear()
+        _idle.clear()
+    for conn in conns:
         try:
             if conn and not conn.closed:
                 conn.close()
         except Exception:
             pass
-    _open_connections.clear()
 
 
 atexit.register(_cleanup_connections)
@@ -107,6 +196,7 @@ atexit.register(_cleanup_connections)
 # ─────────────────────────────────────────────
 
 _schema_ready = False
+_schema_lock = threading.Lock()
 
 
 def _ensure_schema():
@@ -181,9 +271,12 @@ def _ensure_schema():
 
 def _lazy_ensure_schema():
     global _schema_ready
-    if not _schema_ready:
-        _ensure_schema()
-        _schema_ready = True
+    if _schema_ready:
+        return
+    with _schema_lock:  # many worker threads can arrive together; the DDL must run once
+        if not _schema_ready:
+            _ensure_schema()
+            _schema_ready = True
 
 
 # ─────────────────────────────────────────────
@@ -367,6 +460,9 @@ class AlloyDBCollection:
 # AlloyDB client (replaces chromadb.PersistentClient)
 # ─────────────────────────────────────────────
 
+_collections_cache = None   # (monotonic time, [names]) of the last list_collections() query
+
+
 class AlloyDBClient:
     """Mimics chromadb.PersistentClient interface. Collections are logical
     namespaces within the shared `embeddings` table."""
@@ -407,21 +503,48 @@ class AlloyDBClient:
             conn.close()
 
     def list_collections(self) -> List:
-        """List all distinct collection names. Returns objects with a .name attr."""
-        _lazy_ensure_schema()
-        conn = _get_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT DISTINCT collection FROM embeddings WHERE collection LIKE 'patents_%'")
-                rows = cur.fetchall()
-        finally:
-            conn.close()
+        """List all distinct collection names. Returns objects with a .name attr.
+        The answer is reused for config.ALLOYDB_COLLECTIONS_CACHE_SECONDS: the query reads the collection column
+        of the whole table, and a collection only appears when a patent is first indexed into it."""
+        global _collections_cache
+        now = time.monotonic()
+        cached = _collections_cache
+        if cached is not None and now - cached[0] < config.ALLOYDB_COLLECTIONS_CACHE_SECONDS:
+            names = cached[1]
+        else:
+            _lazy_ensure_schema()
+            conn = _get_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT DISTINCT collection FROM embeddings WHERE collection LIKE 'patents_%'")
+                    names = sorted(r[0] for r in cur.fetchall())
+            finally:
+                conn.close()
+            _collections_cache = (now, names)
 
         class _ColRef:
             def __init__(self, name):
                 self.name = name
 
-        return [_ColRef(r[0]) for r in rows]
+        return [_ColRef(n) for n in names]
+
+    def find_collection_holding(self, logical_id: str, name_prefix: str = "patents_") -> Optional[str]:
+        """The first collection (by name) that holds a row with this logical id, or None. One primary-key
+        lookup over every collection's candidate id ("<collection>:<id>", plus the bare id older rows use),
+        instead of a connection and two queries per collection."""
+        names = [c.name for c in self.list_collections() if c.name.startswith(name_prefix)]
+        if not names:
+            return None
+        candidates = [f"{name}:{logical_id}" for name in names] + [logical_id]
+        _lazy_ensure_schema()
+        conn = _get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT collection FROM embeddings WHERE unique_id = ANY(%s)", (candidates,))
+                holders = {r[0] for r in cur.fetchall()}
+        finally:
+            conn.close()
+        return next((name for name in names if name in holders), None)
 
 
 # ─────────────────────────────────────────────

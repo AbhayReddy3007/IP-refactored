@@ -358,18 +358,18 @@ async def index_text(drug_name: str, filename: str, text: str, collection, dates
     sentinel_id = f"{file_hash}_complete"
 
     try:
-        if collection.get(ids=[sentinel_id])["ids"]:
+        if (await asyncio.to_thread(collection.get, ids=[sentinel_id]))["ids"]:
             logger.info("[INDEXING] Already fully indexed: %s", filename)
             return True
     except Exception as e:
         logger.debug("[INDEXING] Sentinel check failed for %s: %s", filename, e)
 
     try:
-        stale = collection.get(where={"filename": filename}, include=["ids"])
+        stale = await asyncio.to_thread(collection.get, where={"filename": filename}, include=["ids"])
         if stale["ids"]:
             logger.info("[INDEXING] Incomplete index for %s — clearing and re-indexing", filename)
             async with _write_lock:
-                collection.delete(where={"filename": filename})
+                await asyncio.to_thread(collection.delete, where={"filename": filename})
     except Exception as e:
         logger.debug("[INDEXING] Stale-chunk cleanup failed for %s: %s", filename, e)
 
@@ -392,7 +392,8 @@ async def index_text(drug_name: str, filename: str, text: str, collection, dates
 
     logger.info("[INDEXING] %s: writing %d chunk(s) + sentinel to AlloyDB...", filename, len(chunks))
     async with _write_lock:
-        collection.add(
+        await asyncio.to_thread(
+            collection.add,
             documents=chunks,
             embeddings=embeddings,
             metadatas=[
@@ -404,7 +405,8 @@ async def index_text(drug_name: str, filename: str, text: str, collection, dates
             ],
             ids=[f"{file_hash}_chunk_{i}" for i in range(len(chunks))],
         )
-        collection.add(
+        await asyncio.to_thread(
+            collection.add,
             documents=["__index_complete__"],
             embeddings=[[0.0] * len(embeddings[0])],
             metadatas=[{
@@ -420,18 +422,15 @@ async def index_text(drug_name: str, filename: str, text: str, collection, dates
 
 
 def find_in_any_collection(filename: str) -> Optional[str]:
+    """The patents_* collection that already holds this file (its index-complete marker), or None.
+    One database lookup over all collections (alloydb_utils.AlloyDBClient.find_collection_holding) - it used to
+    open a connection and run two queries per collection, which took minutes per file with ~90 collections."""
     sid = hashlib.md5(filename.encode()).hexdigest() + "_complete"
-    client = alloydb_client()
-    for col in client.list_collections():
-        if not col.name.startswith("patents_"):
-            continue
-        try:
-            existing = client.get_collection(col.name)
-            if existing.get(ids=[sid])["ids"]:
-                return col.name
-        except Exception as e:
-            logger.debug("[INDEXING] Could not check collection %s for %s: %s", col.name, filename, e)
-    return None
+    try:
+        return alloydb_client().find_collection_holding(sid)
+    except Exception as e:
+        logger.warning("[INDEXING] Could not search the other collections for %s: %s", filename, e)
+        return None
 
 
 async def copy_from_collection(filename: str, source_name: str, target_collection, target_drug: str) -> bool:
@@ -441,28 +440,32 @@ async def copy_from_collection(filename: str, source_name: str, target_collectio
     if source_name == target_collection.name:
         return True
     try:
-        source = alloydb_client().get_collection(source_name)
+        source = await asyncio.to_thread(alloydb_client().get_collection, source_name)
         file_hash = hashlib.md5(filename.encode()).hexdigest()
 
-        chunks = source.get(
+        chunks = await asyncio.to_thread(
+            source.get,
             where={"$and": [{"filename": {"$eq": filename}}, {"chunk_index": {"$gte": 0}}]},
             include=["documents", "metadatas", "embeddings"],
         )
         async with _write_lock:
-            target_collection.delete(where={"filename": filename})
+            await asyncio.to_thread(target_collection.delete, where={"filename": filename})
         if chunks["ids"]:
             async with _write_lock:
-                target_collection.add(
+                await asyncio.to_thread(
+                    target_collection.add,
                     documents=chunks["documents"], embeddings=chunks["embeddings"],
                     metadatas=[{**m, "drug": target_drug} for m in chunks["metadatas"]], ids=chunks["ids"],
                 )
             logger.info("[COPY] %d chunks -> '%s'", len(chunks["ids"]), target_collection.name)
 
         sentinel_id = f"{file_hash}_complete"
-        sentinel = source.get(ids=[sentinel_id], include=["documents", "metadatas", "embeddings"])
+        sentinel = await asyncio.to_thread(
+            source.get, ids=[sentinel_id], include=["documents", "metadatas", "embeddings"])
         if sentinel["ids"]:
             async with _write_lock:
-                target_collection.add(
+                await asyncio.to_thread(
+                    target_collection.add,
                     documents=sentinel["documents"], embeddings=sentinel["embeddings"],
                     metadatas=[{**sentinel["metadatas"][0], "drug": target_drug}], ids=[sentinel_id],
                 )
@@ -511,8 +514,8 @@ async def _process_single_patent(
         step_start = time.monotonic()
 
         _mark_step("checking cache (AlloyDB sentinel)")
-        if not reindex and sentinel_exists(collection, filename):
-            existing_dates = get_dates_from_alloydb(collection, filename)
+        if not reindex and await asyncio.to_thread(sentinel_exists, collection, filename):
+            existing_dates = await asyncio.to_thread(get_dates_from_alloydb, collection, filename)
             if existing_dates.get("filing_date"):
                 if completed is not None:
                     _mark_completed(drug_name, filename, completed)
@@ -521,7 +524,7 @@ async def _process_single_patent(
 
         _mark_step("checking other drugs' collections for a cached copy")
         if not reindex:
-            source_col = find_in_any_collection(filename)
+            source_col = await asyncio.to_thread(find_in_any_collection, filename)
             if source_col:
                 logger.info("[PATENT] %s %s: found cached copy in '%s' — copying instead of re-processing",
                             position, filename, source_col)
@@ -636,7 +639,7 @@ async def indexer(drug_name: str, reindex: bool = False, max_concurrency: Option
     max_concurrency = max_concurrency or config.INDEXER_CONCURRENCY
     run_start = time.monotonic()
 
-    pdf_refs = patent_filter(drug_name)
+    pdf_refs = await asyncio.to_thread(patent_filter, drug_name)
     if not pdf_refs:
         logger.warning("[INDEXER] No PDFs found for '%s'", drug_name)
         return []
@@ -644,10 +647,10 @@ async def indexer(drug_name: str, reindex: bool = False, max_concurrency: Option
     logger.info("[INDEXER] '%s': getting/creating AlloyDB collection...", drug_name)
     collection = get_or_create_collection(drug_name)
     if reindex:
-        alloydb_client().delete_collection(name=collection.name)
+        await asyncio.to_thread(alloydb_client().delete_collection, name=collection.name)
         collection = get_or_create_collection(drug_name)
 
-    completed = _load_progress(drug_name) if not reindex else set()
+    completed = await asyncio.to_thread(_load_progress, drug_name) if not reindex else set()
     already_done = sum(1 for r in pdf_refs if r["filename"] in completed)
 
     logger.info("[INDEXER] '%s': %d patent(s) total, %d running in parallel (%d already done, "

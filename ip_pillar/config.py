@@ -205,6 +205,18 @@ PATENT_CONFIDENCE_THRESHOLD = float(os.getenv("PATENT_CONFIDENCE_THRESHOLD", "0.
 ALLOYDB_CONNECT_TIMEOUT = int(os.getenv("ALLOYDB_CONNECT_TIMEOUT", "30"))
 ALLOYDB_RETRY_COUNT     = int(os.getenv("ALLOYDB_RETRY_COUNT", "3"))
 ALLOYDB_RETRY_BACKOFF   = float(os.getenv("ALLOYDB_RETRY_BACKOFF", "2.0"))
+# Connections kept open for reuse (a new connection costs ~2 s on Cloud Run -> AlloyDB; reuse costs ~0).
+# Connections beyond this many idle ones are closed when released.
+ALLOYDB_POOL_MAX_IDLE  = int(os.getenv("ALLOYDB_POOL_MAX_IDLE", "20"))
+# An idle pooled connection older than this many seconds is tested with SELECT 1 before reuse.
+ALLOYDB_POOL_TEST_AFTER_SECONDS = float(os.getenv("ALLOYDB_POOL_TEST_AFTER_SECONDS", "20"))
+# How long list_collections() results are reused (collections only appear when a patent is first indexed).
+ALLOYDB_COLLECTIONS_CACHE_SECONDS = float(os.getenv("ALLOYDB_COLLECTIONS_CACHE_SECONDS", "120"))
+# Worker threads for the blocking calls (AlloyDB, GCS) the async code hands to asyncio.to_thread.
+# asyncio's default is min(32, cpu + 4) = 6 on a 2-vCPU Cloud Run task, which would cap INDEXER_CONCURRENCY.
+THREAD_POOL_WORKERS = int(os.getenv("THREAD_POOL_WORKERS", "32"))
+# How long the list of patent folders in GCS (patent_filter) is reused within one process.
+PATENT_FOLDERS_CACHE_SECONDS = float(os.getenv("PATENT_FOLDERS_CACHE_SECONDS", "300"))
 
 # ─────────────────────────────────────────────
 # Indexer — Gemini upload + date-extraction tunables (indexer.py)
