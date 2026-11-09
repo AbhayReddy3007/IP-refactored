@@ -24,7 +24,7 @@ result = await primary_market_entry_horizon("semaglutide")   # the drug name is 
 | 7 | Real approval dates for Marketed jurisdictions (FDA / EMA) | `score_calculation/approval_date_fetcher.py` |
 | 8 | Second-pass scores with the real dates | `score_calculation/patent_scores.py` |
 | 9 | `glp_patent_loe` to BigQuery + a JSON snapshot in GCS | `horizon_helpers.py`, `bq_utils.py` |
-| 10 | **Forecast** of future filings (below); skipped if `RUN_FORECAST` is off or the drug is Marketed / Pre-registration | `forecast/` |
+| 10 | **Forecast** of future filings (below); skipped if `RUN_FORECAST` is off, if `SKIP_FORECAST` (default true) finds existing `forecasted_loe` rows for the drug (`REINDEX` or `SKIP_FORECAST=false` forces it), or the drug is Marketed / Pre-registration | `forecast/` |
 | 11 | `glp_master_loe` (patents merged with `forecasted_loe`, re-scored) to BigQuery + JSON | `score_calculation/merge_forecasted_loe.py` |
 | 12 | PDF report from the `glp_master_loe` rows | `generate_report_and_rationale/` |
 | 13 | Blocking Analysis PDF report | `blocking_analysis/generate_report.py` |

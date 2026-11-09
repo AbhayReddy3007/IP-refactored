@@ -15,7 +15,7 @@ from .. import config
 from ..gemini_utils import isolated_gemini_call_stats
 from .bq_utils import fetch_drug_details_df, load_forecasted_loe_table, publish_table
 from .score_calculation import patents_to_dataframe, run_merge
-from .score_calculation.merge_forecasted_loe import is_marketed_or_prereg
+from .score_calculation.merge_forecasted_loe import is_marketed_or_prereg, load_forecasted_loe
 from .score_calculation.phase_fetcher import canonicalise_drug_name
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,8 @@ def publish_loe_tables(patents: List[Dict], drug_name: str, run_ts: str, only: O
 
 async def run_forecast(drug_name: str) -> Dict:
     """Step 10: forecast for the drug, then drop the cached forecasted_loe so the glp_master_loe
-    merge sees the rows it just wrote. {"error": ...} if it fails, {"skipped": reason} if it is not run:
+    merge sees the rows it just wrote. With SKIP_FORECAST (default) a drug that already has forecasted_loe rows
+    is not re-forecast. {"error": ...} if it fails, {"skipped": reason} if it is not run:
     switched off, or the drug is Marketed / Pre-registration (the merge drops its forecasted rows)."""
     if not config.RUN_FORECAST:
         logger.info("[HORIZON] RUN_FORECAST is off - skipping forecast")
@@ -68,6 +69,15 @@ async def run_forecast(drug_name: str) -> Dict:
         if is_marketed_or_prereg(details):
             logger.info("[HORIZON] %r is Marketed / Pre-registration - skipping forecast", drug_name)
             return {"skipped": "Marketed / Pre-registration"}
+    if config.SKIP_FORECAST and not config.REINDEX:
+        # Read fresh: the cached table may predate rows another run wrote.
+        load_forecasted_loe_table.cache_clear()
+        existing = await asyncio.to_thread(load_forecasted_loe, drug_name)
+        if len(existing):
+            logger.info("[HORIZON] SKIP_FORECAST: %r already has %d forecasted_loe row(s) - reusing them",
+                        drug_name, len(existing))
+            return {"skipped": f"SKIP_FORECAST: {len(existing)} existing forecasted_loe row(s) reused"}
+        logger.info("[HORIZON] SKIP_FORECAST: %r has no forecasted_loe rows - running forecast", drug_name)
     # Imported here: the forecast package itself uses this package's approval-date fetcher.
     from .forecast import forecast
 

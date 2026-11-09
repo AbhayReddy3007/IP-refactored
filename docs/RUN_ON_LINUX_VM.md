@@ -37,6 +37,7 @@ run-ip-dimension --drug "Semaglutide"
 | Ignore caches and redo everything | `--reindex` (or `REINDEX=true`) | off |
 | Which dimension | `IP_DIMENSION=<name>` | `all` |
 | Skip the forecast inside the horizon run | `RUN_FORECAST=false` | on |
+| Reuse existing `forecasted_loe` rows instead of re-forecasting (forecast still runs for a drug with none) | `SKIP_FORECAST=true` (`false` = always forecast) | true |
 | Keep forecast rows for Marketed / Pre-registration drugs | `NO_MARKETED_SKIP=true` | off |
 | Lower Gemini / AlloyDB load | `ANALYSIS_CONCURRENCY`, `INDEXER_CONCURRENCY` | 5, 10 |
 
@@ -203,6 +204,7 @@ Each dimension folder has the same shape: a file holding only the dimension func
 | `DRUG_NAME` | empty (all GLP-1 drugs) |
 | `REINDEX` | `false` |
 | `RUN_FORECAST` | `true` |
+| `SKIP_FORECAST` | `true` |
 | `NO_MARKETED_SKIP` | `false` (forecast rows of Marketed / Pre-registration drugs are dropped) |
 | `ALLOYDB_USER` / `ALLOYDB_DB` / `ALLOYDB_PORT` | `postgres` / `postgres` / `5432` |
 | `PATENT_MASTER_TABLE` | `cognito-dev-380506.stage.patent_master` |

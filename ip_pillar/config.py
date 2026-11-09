@@ -262,6 +262,10 @@ GCS_JSON_EXPORT = os.getenv("GCS_JSON_EXPORT", "loe_json_exports")
 # (its input) and building glp_master_loe (which merges the new forecasted_loe rows). Set to false to skip it.
 RUN_FORECAST = os.getenv("RUN_FORECAST", "true").strip().lower() not in ("0", "false", "no", "off")
 
+# true (default): a drug that already has rows in forecasted_loe reuses them and forecast() is not run; a drug with no
+# rows still runs it. false: forecast() runs on every horizon run. REINDEX also forces it to run.
+SKIP_FORECAST = os.getenv("SKIP_FORECAST", "true").strip().lower() not in ("0", "false", "no", "off")
+
 # Which IP dimension(s) run_ip_dimension runs:
 #   all                              — all five, in the order below
 #   primary_market_entry_horizon     — only that dimension
