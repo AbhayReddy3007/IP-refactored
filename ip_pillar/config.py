@@ -202,7 +202,7 @@ CLOUD_RUN_TASK_COUNT = int(os.getenv("CLOUD_RUN_TASK_COUNT", "1"))
 # e.g. "Semaglutide" or "Semaglutide, Tirzepatide, Liraglutide".
 # Leave unset / empty to process every drug found in GCS (the default,
 # sharded-discovery behaviour).
-DRUG_NAME = os.getenv("DRUG_NAME", "Semaglutide,Orforglipron Calcium,Lotiglipron")
+DRUG_NAME = os.getenv("DRUG_NAME", "Cotadutide,Brenipatide,Efocipegtrutide,Enicepatide,Pemvidutide,Albenatide,Pegapamodutide,Vk-2735,Liraglutide Biobetter,Ct-996")
 # Drugs to leave out when DRUG_NAME is not set (comma-separated, same spelling rules as DRUG_NAME): "run every
 # drug except these", e.g. the ones an earlier run already finished.
 SKIP_DRUGS = os.getenv("SKIP_DRUGS", "Asc-30,Bi-3034701,Da-302168S,Aleniglipron L-Arginine,Benaglutide,Bgm-0504,Azd-9550,Azd-6234+Azd-9550,Berobenatide,Acmopatide")
