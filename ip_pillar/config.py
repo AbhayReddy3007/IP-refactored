@@ -164,6 +164,19 @@ MAX_EVIDENCE_CHARS = int(os.getenv("MAX_EVIDENCE_CHARS", "12000"))
 # Local Excel file with each drug's real-world formulation data (Step 2)
 FORMULATION_EXCEL_PATH = os.getenv("FORMULATION_EXCEL_PATH", "")
 
+# Step 2 reference data for a drug the Excel has no rows for: built from ClinicalTrials.gov + openFDA labels
+# (blocking_analysis/formulation_lookup.py). Set FORMULATION_LOOKUP_ENABLED=false to turn it off.
+FORMULATION_LOOKUP_ENABLED = os.getenv("FORMULATION_LOOKUP_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+# A drug's looked-up records are reused this long before the sources are read again.
+FORMULATION_CACHE_DAYS = float(os.getenv("FORMULATION_CACHE_DAYS", "30"))
+# GCS cache folder (within GCS_CACHE_PREFIX): gs://{GCS_BUCKET}/{GCS_CACHE_PREFIX}/{this}/{drug}/formulation_records.json
+FORMULATION_CACHE_SUBFOLDER = os.getenv("FORMULATION_CACHE_SUBFOLDER", "formulation_cache")
+# Most ClinicalTrials.gov studies shown to Gemini, and the cap on the size of what it is shown (characters).
+CTGOV_MAX_STUDIES = int(os.getenv("CTGOV_MAX_STUDIES", "25"))
+FORMULATION_MAX_PROMPT_CHARS = int(os.getenv("FORMULATION_MAX_PROMPT_CHARS", "60000"))
+# Optional openFDA key (raises the rate limit; the lookup works without one).
+OPENFDA_API_KEY = os.getenv("OPENFDA_API_KEY", "")
+
 # Subfolder (within GCS_CACHE_PREFIX) where per-patent blocking-analysis
 # results are cached, so re-runs only analyse NEW patents.
 GCS_ANALYSIS_CACHE_SUBFOLDER = os.getenv("GCS_ANALYSIS_CACHE_SUBFOLDER", "analysis_cache")

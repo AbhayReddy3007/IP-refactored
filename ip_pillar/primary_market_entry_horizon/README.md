@@ -36,7 +36,7 @@ A failed forecast or report is recorded in the result and does not fail the run.
 Decides whether each patent is **BLOCKING** or **NON-BLOCKING** for a would-be generic.
 
 1. **Claim classification** - the primary claim goes into one of seven categories (Composition of Matter, Salt/Polymorph, ...).
-2. **Claim elements** - does the patent cover the product's active ingredient, formulation, route, device or combination? (uses the optional `FORMULATION_EXCEL_PATH` file)
+2. **Claim elements** - does the patent cover the product's active ingredient, formulation, route, device or combination? The product is described by the optional `FORMULATION_EXCEL_PATH` file; for a drug the Excel has no rows for, `blocking_analysis/formulation_lookup.py` builds the description from ClinicalTrials.gov and the openFDA label (Gemini, cached per drug for 30 days; `FORMULATION_LOOKUP_ENABLED=false` turns it off)
 3. **Scientific barrier** - does the feature solve a real technical problem? (evidence from PubMed / Europe PMC / the web)
 4. **Development feasibility** - would removing the feature fail approval, or force new Phase I / bridging studies?
 5. **Novelty and difficulty** - is the solution novel and technically hard? Only a HIGH-confidence verdict stays BLOCKING.

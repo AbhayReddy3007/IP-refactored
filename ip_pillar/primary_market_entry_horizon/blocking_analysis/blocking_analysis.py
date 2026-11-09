@@ -35,6 +35,7 @@ from ...indexer import generate_embeddings
 from ...utils import extract_jurisdiction
 from .step1_claim_classification import _run_step1
 from .step2_claim_elements import _run_step2, get_drug_rows
+from .formulation_lookup import get_drug_rows_with_fallback
 from .step3_scientific_barrier import _run_step3
 from .step4_development_feasibility import _run_step4
 from .step5_novelty_difficulty import _run_step5
@@ -762,11 +763,12 @@ async def run_blocking_analysis(
         _print_summary_table(drug_name, patents)
         return patents
 
-    drug_rows = get_drug_rows(drug_name)
+    # The formulation Excel when it has the drug, otherwise records built from ClinicalTrials.gov + openFDA
+    drug_rows = await get_drug_rows_with_fallback(drug_name)
     if drug_rows:
-        logger.info(f"[STEP 2] {len(drug_rows)} Excel record(s) ready for '{drug_name}'")
+        logger.info(f"[STEP 2] {len(drug_rows)} formulation record(s) ready for '{drug_name}'")
     else:
-        logger.info(f"[STEP 2] No Excel data for '{drug_name}' — Step 2 will assess from patent claims alone")
+        logger.info(f"[STEP 2] No formulation data for '{drug_name}' — Step 2 will assess from patent claims alone")
 
     if drug_phase:
         logger.info(f"[STEP 3] Phase info ready for '{drug_name}': {drug_phase}")
